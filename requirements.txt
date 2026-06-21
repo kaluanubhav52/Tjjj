@@ -21,3 +21,7 @@ telegraph
 TgCrypto
 urllib3
 yt-dlp
+
+#server
+aiohttp==3.11.11
+
