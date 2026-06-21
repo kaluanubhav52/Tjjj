@@ -85,6 +85,18 @@ class Database:
         results.sort(key=sort_key)
         return results
 
+    async def get_all_file_names(self):
+        """ Fuzzy matching ke liye optimized unique latest file names fetch karta hai """
+        if self.files is None: return []
+        try:
+            # Memory optimized projection (sirf file_name nikalega) aur latest 1500 items tak limited
+            cursor = self.files.find({}, {"file_name": 1, "_id": 0}).sort("_id", -1).limit(1500)
+            results = await cursor.to_list(length=1500)
+            return [doc["file_name"] for doc in results if "file_name" in doc]
+        except Exception as e:
+            print(f"Error fetching all file names: {e}")
+            return []
+
     async def get_settings(self, chat_id):
         settings = await self.settings.find_one({'_id': chat_id})
         if not settings:
