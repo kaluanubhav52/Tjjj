@@ -1,36 +1,38 @@
 import logging
 import asyncio
 import os
-import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+from aiohttp import web
 from pyrogram import Client, idle
 from config import API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL
 from database import db
 
 # Logging configuration
 logging.basicConfig(
-    level=logging.ERROR,
+    level=logging.INFO, # Changed to INFO to track server initialization
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-# Render Port Handler (Fake HTTP Server for Render)
-def run_port_server():
-    # Render automatically provides a PORT environment variable
-    port = int(os.environ.get("PORT", 8080))
-    server_address = ("", port)
+# 1. Advanced Async HTTP Server for Render Health Checks
+async def handle_health_check(request):
+    return web.Response(text="Bot is perfectly healthy and running! 🚀", status=200)
+
+async def start_port_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health_check)
     
-    class SimpleHandler(SimpleHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"Bot is alive and running!")
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render assigns a dynamic port via environment variable
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    
+    await site.start()
+    logger.info(f"🌐 Advanced Async Web Server started on port {port}")
+    return runner
 
-    httpd = HTTPServer(server_address, SimpleHandler)
-    print(f"🌐 Fake server started on port {port} for Render health check.")
-    httpd.serve_forever()
-
-# Pyrogram Client Setup
+# 2. Pyrogram Client Setup
 app = Client(
     "TjBot_Session",
     api_id=API_ID,
@@ -39,7 +41,10 @@ app = Client(
     plugins=dict(root="Tj_Bots") 
 )
 
-async def start_bot():
+async def main():
+    # A. Start the web server first so Render sees the port immediately active
+    web_runner = await start_port_server()
+
     print("🤖 Bot is waking up...")
     await app.start()
     await db.init_database(app)
@@ -63,17 +68,20 @@ async def start_bot():
             LOG_CHANNEL,
             f"#BotStarted\n✅ **Bot is up and running!**\n@{me.username}"
         )
-    except: 
-        pass
+    except Exception as e:
+        logger.error(f"Failed to send startup log: {e}")
 
     print("✅ Bot is online! Go test it out.")
+    
+    # B. Keep bot running smoothly
     await idle()
+    
+    # C. Graceful Shutdown Sequence (If server stops)
+    print("👋 Shutting down safely...")
     await app.stop()
+    await web_runner.cleanup() # Safely close the port server
+    print("🛑 Bot stopped successfully.")
 
 if __name__ == "__main__":
-    # 1. Start the Port Server in a background thread so it doesn't block the bot
-    port_thread = threading.Thread(target=run_port_server, daemon=True)
-    port_thread.start()
-
-    # 2. Run the main Pyrogram Bot
-    app.run(start_bot())
+    # Standard python loop execution for modern async code
+    asyncio.run(main())
