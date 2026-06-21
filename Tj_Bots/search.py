@@ -4,7 +4,6 @@ from database import db
 from config import UPDATE_CHANNEL
 from .utils import get_readable_size, clean_filename
 import asyncio
-# Fuzzywuzzy / Thefuzz import karein
 from thefuzz import process
 
 @Client.on_message(filters.text & ~filters.command(["start", "index", "newindex", "settings", "broadcast", "broadcast_groups", "stats", "restart", "clean", "channels", "watch", "font", "share", "tts", "paste"]))
@@ -23,43 +22,63 @@ async def search_handler(client, message):
 
     if len(query) < 2: return
 
-    # 1. Pehle exact matching files search karein
+    # 1. Exact Database Search
     results = await db.search_files(query)
     
-    # 2. Agar koi result NAHI mila, toh hum SUGGESTIONS dikhayenge
+    # 2. If NO Results Found
     if not results:
         try:
-            # Apne database se saari files ke titles fetch karein fuzzy matching ke liye
-            # Note: Agar aapka database bohot bada hai, toh sirf top 500-1000 latest titles fetch karna behtar hoga performance ke liye.
-            all_files = await db.get_all_file_names() # Make sure aapke database module mein yeh function ho ya jo saare names nikal sake
+            all_files = await db.get_all_file_names()
+            suggestions = []
             
-            # Agar titles list mil gayi, toh match nikalenge
             if all_files:
-                # Top 4 matches nikalein jinka score 45% se upar ho
+                # Top 4 suggestions nikalenge jinka match 45% se upar ho
                 matches = process.extract(query, all_files, limit=4)
                 suggestions = [text for text, score in matches if score >= 45]
                 
-                if suggestions:
-                    suggest_keyboard = []
-                    for item in suggestions:
-                        # Callback_data limit 64 bytes hoti hai, isliye string safe (max 40 chars) bhej rahe hain
-                        suggest_keyboard.append([InlineKeyboardButton(f"🎬 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
-                    
-                    await message.reply_text(
-                        f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
-                        f"🤔 **Did you mean one of these?**\n"
-                        f"👇 Click on any button below to search directly:",
-                        reply_markup=InlineKeyboardMarkup(suggest_keyboard),
-                        quote=True
-                    )
-                    return
+            if suggestions:
+                # OPTION A: Agar close typos hain, toh fuzzy suggestions buttons dikhao
+                suggest_keyboard = []
+                for item in suggestions:
+                    suggest_keyboard.append([InlineKeyboardButton(f"🎬 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
+                
+                await message.reply_text(
+                    f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
+                    f"🤔 **Did you mean one of these?**\n"
+                    f"👇 Click on any button below to search directly:",
+                    reply_markup=InlineKeyboardMarkup(suggest_keyboard),
+                    quote=True
+                )
+                return
+            else:
+                # OPTION B: Agar totally different word hai (Fuzzy fail), toh GOOGLE BUTTON OPTION do
+                google_encoded_query = query.replace(" ", "+")
+                google_url = f"https://www.google.com/search?q={google_encoded_query}"
+                
+                fail_keyboard = [
+                    [
+                        InlineKeyboardButton("🌐 Search on Google", url=google_url)
+                    ],
+                    [
+                        # Aap yahan apne Telegram Request channel/group ka link de sakte hain
+                        InlineKeyboardButton("📢 Request on Group", url="https://t.me/your_support_group") 
+                    ]
+                ]
+                
+                await message.reply_text(
+                    f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
+                    f"Mujhe database mein isse milta-julta kuch nahi mila. Aap niche diye gaye button ka use karke Google par search kar sakte hain:",
+                    reply_markup=InlineKeyboardMarkup(fail_keyboard),
+                    quote=True
+                )
+                return
 
-            # Agar koi close match bhi nahi mila, toh normal error msg
-            msg = await message.reply(f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>", quote=True)
-            await asyncio.sleep(3)
-            await msg.delete()
         except Exception as e:
-            print(f"Error in suggestions: {e}")
+            print(f"Error in suggestions/google fallback: {e}")
+            try:
+                await message.reply(f"**No results found for: `{query}`**", quote=True)
+            except:
+                pass
         return
 
     try:
@@ -67,19 +86,16 @@ async def search_handler(client, message):
     except Exception as e:
         print(f"Error sending results: {e}")
 
-# 3. New Callback Handler for Suggestion Buttons Click
+# Callback Handler for Suggestion Buttons Click
 @Client.on_callback_query(filters.regex(r"^fuzz_"))
 async def handle_suggestion_click(client, query: CallbackQuery):
-    # Prefix hata kar clicked text nikalen
     suggested_query = query.data.replace("fuzz_", "")
     await query.answer(f"Searching for: {suggested_query}")
     
-    # User ke click karne par fir se unhi results ko display kar denge jo exact match honge
     settings = await db.get_settings(query.message.chat.id)
     results = await db.search_files(suggested_query)
     
     if results:
-        # Purane 'Did you mean' wale message ko direct results list se edit kar denge
         await send_results_page(client, query.message, results, 1, suggested_query, settings, is_edit=True)
     else:
         await query.answer("Could not find files for this suggestion.", show_alert=True)
