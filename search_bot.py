@@ -8,7 +8,7 @@ from database import db
 
 # Logging configuration
 logging.basicConfig(
-    level=logging.INFO, # Changed to INFO to track server initialization
+    level=logging.INFO, 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -16,21 +16,6 @@ logger = logging.getLogger(__name__)
 # 1. Advanced Async HTTP Server for Render Health Checks
 async def handle_health_check(request):
     return web.Response(text="Bot is perfectly healthy and running! 🚀", status=200)
-
-async def start_port_server():
-    app = web.Application()
-    app.router.add_get('/', handle_health_check)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # Render assigns a dynamic port via environment variable
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    
-    await site.start()
-    logger.info(f"🌐 Advanced Async Web Server started on port {port}")
-    return runner
 
 # 2. Pyrogram Client Setup
 app = Client(
@@ -41,14 +26,30 @@ app = Client(
     plugins=dict(root="Tj_Bots") 
 )
 
-async def main():
-    # A. Start the web server first so Render sees the port immediately active
-    web_runner = await start_port_server()
+async def start_port_server():
+    server = web.Application()
+    server.router.add_get('/', handle_health_check)
+    
+    runner = web.AppRunner(server)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    
+    await site.start()
+    logger.info(f"🌐 Advanced Async Web Server started on port {port}")
+    return runner
 
+async def main():
+    # 1. Initialize and start Pyrogram FIRST. 
+    # This guarantees Pyrogram binds securely to the main asyncio loop.
     print("🤖 Bot is waking up...")
     await app.start()
     await db.init_database(app)
     
+    # 2. Immediately spin up the web server right after so Render is satisfied
+    web_runner = await start_port_server()
+
     # Handle restart message if exists
     if os.path.exists("restart.txt"):
         try:
@@ -73,15 +74,14 @@ async def main():
 
     print("✅ Bot is online! Go test it out.")
     
-    # B. Keep bot running smoothly
+    # Keep bot running smoothly
     await idle()
     
-    # C. Graceful Shutdown Sequence (If server stops)
+    # Graceful Shutdown Sequence
     print("👋 Shutting down safely...")
     await app.stop()
-    await web_runner.cleanup() # Safely close the port server
+    await web_runner.cleanup() 
     print("🛑 Bot stopped successfully.")
 
 if __name__ == "__main__":
-    # Standard python loop execution for modern async code
     asyncio.run(main())
