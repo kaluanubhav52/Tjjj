@@ -6,6 +6,25 @@ from .utils import get_readable_size, clean_filename
 import asyncio
 from thefuzz import process
 
+# ⏱️ बैकग्राउंड टास्क: सजेशन्स को 1 मिनट में डिलीट करने के लिए
+async def auto_delete_message(message, delay):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+# ⏳ बैकग्राउंड टास्क: सर्च रिज़ल्ट को 5 मिनट में एक्सपायर करने के लिए
+async def auto_expire_results(message, delay):
+    await asyncio.sleep(delay)
+    try:
+        await message.edit_text(
+            text="⏳ **Time Expired!**\n\nयह सर्च रिज़ल्ट 5 मिनट पुराने होने के कारण सुरक्षा के लिए एक्सपायर हो गया है। कृपया दोबारा नाम लिखकर सर्च करें।",
+            reply_markup=None
+        )
+    except Exception:
+        pass
+
 @Client.on_message(filters.text & ~filters.command(["start", "index", "newindex", "settings", "broadcast", "broadcast_groups", "stats", "restart", "clean", "channels", "watch", "font", "share", "tts", "paste"]))
 async def search_handler(client, message):
     query = message.text
@@ -42,13 +61,15 @@ async def search_handler(client, message):
                 for item in suggestions:
                     suggest_keyboard.append([InlineKeyboardButton(f"🎬 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
                 
-                await message.reply_text(
+                suggest_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
                     f"🤔 **Did you mean one of these?**\n"
                     f"👇 Click on any button below to search directly:",
                     reply_markup=InlineKeyboardMarkup(suggest_keyboard),
                     quote=True
                 )
+                # ⏰ 1 मिनट बाद सुझाव वाले मेसेज को डिलीट करने का टाइमर
+                asyncio.create_task(auto_delete_message(suggest_msg, 60))
                 return
             else:
                 # OPTION B: Agar totally different word hai (Fuzzy fail), toh GOOGLE BUTTON OPTION do
@@ -60,17 +81,18 @@ async def search_handler(client, message):
                         InlineKeyboardButton("🌐 Search on Google", url=google_url)
                     ],
                     [
-                        # Aap yahan apne Telegram Request channel/group ka link de sakte hain
                         InlineKeyboardButton("📢 Request on Group", url="https://t.me/your_support_group") 
                     ]
                 ]
                 
-                await message.reply_text(
+                fail_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
                     f"Mujhe database mein isse milta-julta kuch nahi mila. Aap niche diye gaye button ka use karke Google par search kar sakte hain:",
                     reply_markup=InlineKeyboardMarkup(fail_keyboard),
                     quote=True
                 )
+                # ⏰ 1 मिनट बाद फेल मेसेज को डिलीट करने का टाइमर
+                asyncio.create_task(auto_delete_message(fail_msg, 60))
                 return
 
         except Exception as e:
@@ -96,7 +118,12 @@ async def handle_suggestion_click(client, query: CallbackQuery):
     results = await db.search_files(suggested_query)
     
     if results:
-        await send_results_page(client, query.message, results, 1, suggested_query, settings, is_edit=True)
+        # नई सर्च शुरू करने से पहले पुराने सजेशन मेसेज को डिलीट कर देते हैं
+        try:
+            await query.message.delete()
+        except:
+            pass
+        await send_results_page(client, query.message, results, 1, suggested_query, settings, is_edit=False)
     else:
         await query.answer("Could not find files for this suggestion.", show_alert=True)
 
@@ -104,6 +131,7 @@ async def handle_suggestion_click(client, query: CallbackQuery):
 async def handle_search_click(client, query: CallbackQuery):
     file_id = query.data.split("_")[1]
     bot_username = client.me.username
+    # बटन क्लिक करने पर यूजर सीधा बोट के PM में डीप-लिंक के साथ रीडायरेक्ट हो जाएगा
     await query.answer(url=f"https://t.me/{bot_username}?start={file_id}")
 
 @Client.on_callback_query(filters.regex(r"^search#"))
@@ -135,6 +163,7 @@ async def send_results_page(client, message, results, page, query, settings, is_
     text += f"<blockquote><b><tg-emoji emoji-id='5397782960512444700'>📌</tg-emoji></b>   <b>Query:</b> <code>{query}</code></blockquote>\n"
     text += f"<blockquote><b><tg-emoji emoji-id='5282843764451195532'>🖥</tg-emoji></b>   <b>Results:</b> <code>{total_results}</code></blockquote>\n"
     text += "\n**<tg-emoji emoji-id='5406745015365943482'>⬇️</tg-emoji><tg-emoji emoji-id='5406745015365943482'>⬇️</tg-emoji><tg-emoji emoji-id='5406745015365943482'>⬇️</tg-emoji>**\n\n"
+    text += "⏳ _This message will automatically expire in 5 minutes..._\n\n"
     
     keyboard = []
     display_mode = settings.get('display_mode', 'inline')
@@ -168,4 +197,6 @@ async def send_results_page(client, message, results, page, query, settings, is_
     if is_edit:
         await message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     else:
-        await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True, quote=True)
+        res_msg = await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True, quote=True)
+        # ⏳ 5 मिनट का एक्सपायरी टाइमर यहाँ एक्टिवेट होगा (सिर्फ फ्रेश मेसेज भेजने पर)
+        asyncio.create_task(auto_expire_results(res_msg, 300))
