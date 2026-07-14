@@ -1,6 +1,8 @@
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
+from pyrogram.errors import FloodWait
+from bson import ObjectId  # बैच आईडी फेच करने के लिए जरूरी है
 from config import UPDATE_CHANNEL, REQUEST_GROUP, PHOTO_URL, ADMINS, LOG_CHANNEL, AUTH_CHANNEL_FORCE
 from database import db
 
@@ -40,6 +42,65 @@ async def send_link_message(client, chat_id, file_data, reply_to_id=None):
         return False
 
 # ------------------------------------------------------------ #
+#                       BATCH SEND HELPER                      #
+# ------------------------------------------------------------ #
+async def send_batch_messages(client, chat_id, batch_db_id, reply_to_id=None):
+    """डेटाबेस से बैच डेटा उठाकर यूजर को सारे मैसेजेस एक-एक करके फॉरवर्ड करने वाला हेल्पर"""
+    try:
+        # सुरक्षित रूप से अलग-अलग कलेक्शन फॉर्मेट्स को हैंडल करना
+        if hasattr(db, "col"):
+            batch_data = await db.col.find_one({"_id": ObjectId(batch_db_id)})
+        elif hasattr(db, "files"):
+            batch_data = await db.files.find_one({"_id": ObjectId(batch_db_id)})
+        else:
+            batch_data = await db.db.files.find_one({"_id": ObjectId(batch_db_id)})
+    except Exception as e:
+        print(f"Database batch fetch error: {e}")
+        batch_data = None
+        
+    if not batch_data:
+        return False, "❌ यह बैच उपलब्ध नहीं है या डेटाबेस से डिलीट हो चुका है।"
+
+    from_chat = batch_data.get("chat_id")
+    start_id = batch_data.get("start_id")
+    last_id = batch_data.get("last_id")
+    story_name = batch_data.get("file_name")
+
+    progress_msg = await client.send_message(
+        chat_id=chat_id,
+        text=f"⏳ **प्रक्रिया शुरू हो रही है...**\n`{story_name}` के सभी एपिसोड्स भेजे जा रहे हैं।",
+        reply_to_message_id=reply_to_id
+    )
+    
+    sent_count = 0
+    for msg_id in range(start_id, last_id + 1):
+        try:
+            # copy_message बिना "Forwarded From" टैग के मैसेज सेंड करता है
+            await client.copy_message(
+                chat_id=chat_id,
+                from_chat_id=from_chat,
+                message_id=msg_id
+            )
+            sent_count += 1
+            await asyncio.sleep(0.5)  # टेलीग्राम की लिमिट्स (Flood Limit) से सुरक्षा के लिए
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+            # री-ट्राई करना
+            try:
+                await client.copy_message(chat_id=chat_id, from_chat_id=from_chat, message_id=msg_id)
+                sent_count += 1
+            except:
+                pass
+        except Exception as e:
+            print(f"Error copying msg {msg_id}: {e}")
+            continue
+    
+    await progress_msg.edit_text(
+        f"✅ **कार्य पूर्ण!**\n`{story_name}` के कुल `{sent_count}` मैसेजेस सफलतापूर्वक भेज दिए गए हैं।"
+    )
+    return True, None
+
+# ------------------------------------------------------------ #
 #                           START CMD                           #
 # ------------------------------------------------------------ #
 @Client.on_message(filters.command("start"))
@@ -71,11 +132,18 @@ async def start_command(client, message):
                     quote=True
                 )
 
-            file_data = await db.get_file(file_db_id)
-            if file_data:
-                success = await send_link_message(client, message.chat.id, file_data, message.id)
+            # 🚀 बैच या सिंगल फ़ाइल डिसीजन मेकर
+            if file_db_id.startswith("batch_"):
+                batch_id = file_db_id.replace("batch_", "")
+                success, err = await send_batch_messages(client, message.chat.id, batch_id, message.id)
                 if not success:
-                    await message.reply("❌ The link was deleted or inaccessible.", quote=True)
+                    await message.reply(err or "❌ Error processing batch link.", quote=True)
+            else:
+                file_data = await db.get_file(file_db_id)
+                if file_data:
+                    success = await send_link_message(client, message.chat.id, file_data, message.id)
+                    if not success:
+                        await message.reply("❌ The link was deleted or inaccessible.", quote=True)
             return
 
         # Normal start animation and home message
@@ -157,7 +225,7 @@ async def callback_handler(client, query: CallbackQuery):
 
     # Handle subscription check for files/links
     if data.startswith("checksub_"):
-        file_db_id = data.split("_")[1]
+        file_db_id = data.replace("checksub_", "") # स्प्लिट एरर बग यहाँ फिक्स कर दिया गया है
         should_check = AUTH_CHANNEL_FORCE
         is_subbed = True
 
@@ -170,16 +238,26 @@ async def callback_handler(client, query: CallbackQuery):
         if not is_subbed:
             return await query.answer("❌ You must join the update channel first!", show_alert=True)
 
-        file_data = await db.get_file(file_db_id)
-        if file_data:
-            reply_to = query.message.reply_to_message.id if query.message.reply_to_message else None
-            success = await send_link_message(client, query.message.chat.id, file_data, reply_to)
+        reply_to = query.message.reply_to_message.id if query.message.reply_to_message else None
+
+        # 🚀 फ़ोर्स सब चेकिंग के बाद बैच या सिंगल का फैसला
+        if file_db_id.startswith("batch_"):
+            batch_id = file_db_id.replace("batch_", "")
+            success, err = await send_batch_messages(client, query.message.chat.id, batch_id, reply_to)
             if success:
                 await query.message.delete()
             else:
-                await query.answer("❌ Link not found or inaccessible.", show_alert=True)
+                await query.answer(err or "❌ Batch not found or inaccessible.", show_alert=True)
         else:
-            await query.answer("❌ Link not found in database.", show_alert=True)
+            file_data = await db.get_file(file_db_id)
+            if file_data:
+                success = await send_link_message(client, query.message.chat.id, file_data, reply_to)
+                if success:
+                    await query.message.delete()
+                else:
+                    await query.answer("❌ Link not found or inaccessible.", show_alert=True)
+            else:
+                await query.answer("❌ Link not found in database.", show_alert=True)
         return
 
     # Admin-only protection
@@ -249,6 +327,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<b><u>Admin Control Panel:</u></b>\n\n"
             "<b>◉ Content Management:</b>\n"
             "<blockquote>• <code>/index</code> [link] - [start] - Add links from a channel text (by range).\n"
+            "• <code>/batch</code> - Build customizable interactive episode batches (Interactive Setup).\n"
             "• <code>/newindex</code> [ID] - Track new text content in a channel.\n"
             "• <code>/channels</code> - Manage tracked channels.</blockquote>\n\n"
             "<b>◉ Users and Groups:</b>\n"
