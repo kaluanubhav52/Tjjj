@@ -1,5 +1,6 @@
 import motor.motor_asyncio
 import re
+from bson.objectid import ObjectId # ObjectId हैंडलिंग के लिए मुख्य इम्पोर्ट
 from config import MONGO_URI, DB_NAME
 
 class Database:
@@ -47,22 +48,41 @@ class Database:
     async def get_all_groups(self):
         return self.groups.find({})
 
+    # ------------------------------------------------------------ #
+    #                     💾 FILE & BATCH SAVE LOGIC               #
+    # ------------------------------------------------------------ #
     async def save_file(self, file_data):
+        """नॉर्मल लिंक्स और बैच फाइल्स दोनों को सेव/अपडेट करने का कंबाइंड मेथड"""
         if self.files is None: return "error"
+        
+        # डुप्लीकेट एंट्रीज रोकने के लिए चेक करें
         exist = await self.files.find_one({'file_unique_id': file_data['file_unique_id']})
         if exist:
             return "duplicate"
+            
         await self.files.insert_one(file_data)
         return "saved"
 
     async def get_file(self, _id):
-        from bson.objectid import ObjectId
+        """स्मार्ट गेट-फाइल: यह ObjectId string और raw custom IDs दोनों को सपोर्ट करता है"""
+        if self.files is None: return None
         try:
-            return await self.files.find_one({'_id': ObjectId(_id)})
-        except:
+            # अगर _id एक वैध 24-character hex string (ObjectId) है, तो उसे कन्वर्ट करें
+            if isinstance(_id, str) and len(_id) == 24:
+                try:
+                    _id = ObjectId(_id)
+                except:
+                    pass # अगर कन्वर्ट न हो तो स्ट्रिंग ही रहने दें
+            return await self.files.find_one({'_id': _id})
+        except Exception as e:
+            print(f"Error in get_file: {e}")
             return None
 
+    # ------------------------------------------------------------ #
+    #                     🔍 SEARCH & FUZZY MATCHING               #
+    # ------------------------------------------------------------ #
     async def search_files(self, query):
+        if self.files is None: return []
         # क्वेरी में से स्पेशल कैरेक्टर हटाना
         clean_query = re.sub(r'[._\-]', ' ', query)
         words = clean_query.split()
@@ -79,7 +99,7 @@ class Database:
         return results
 
     async def get_all_file_names(self):
-        """ Fuzzy matching के लिए optimized unique latest file names fetch करता है """
+        """ Fuzzy matching के लिए unique latest file names (नॉर्मल + बैच दोनों) fetch करता है """
         if self.files is None: return []
         try:
             # Memory optimized projection (सिर्फ file_name निकालेगा) और latest 1500 items तक सीमित
@@ -90,6 +110,9 @@ class Database:
             print(f"Error fetching all file names: {e}")
             return []
 
+    # ------------------------------------------------------------ #
+    #                     ⚙️ SETTINGS & WATCHLIST                 #
+    # ------------------------------------------------------------ #
     async def get_settings(self, chat_id):
         settings = await self.settings.find_one({'_id': chat_id})
         if not settings:
@@ -109,6 +132,9 @@ class Database:
         channels = await self.watched.find({}).to_list(length=1000)
         return [c['_id'] for c in channels]
 
+    # ------------------------------------------------------------ #
+    #                     🧹 DATA CLEANUP SYSTEM                    #
+    # ------------------------------------------------------------ #
     async def delete_all_files(self):
         result = await self.files.delete_many({})
         return result.deleted_count
@@ -128,6 +154,9 @@ class Database:
         result = await self.files.delete_many({'chat_id': chat_id})
         return result.deleted_count
 
+    # ------------------------------------------------------------ #
+    #                     🚫 BAN SYSTEM (USER & CHAT)              #
+    # ------------------------------------------------------------ #
     async def ban_user(self, user_id, reason="No reason specified"):
         await self.banned.update_one(
             {'_id': user_id}, 
