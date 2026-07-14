@@ -95,9 +95,12 @@ async def send_batch_messages(client, chat_id, batch_db_id, reply_to_id=None):
             print(f"Error copying msg {msg_id}: {e}")
             continue
     
-    await progress_msg.edit_text(
-        f"✅ **कार्य पूर्ण!**\n`{story_name}` के कुल `{sent_count}` मैसेजेस सफलतापूर्वक भेज दिए गए हैं।"
-    )
+    try:
+        await progress_msg.edit_text(
+            f"✅ **कार्य पूर्ण!**\n`{story_name}` के कुल `{sent_count}` मैसेजेस सफलतापूर्वक भेज दिए गए हैं।"
+        )
+    except:
+        pass
     return True, None
 
 # ------------------------------------------------------------ #
@@ -107,6 +110,9 @@ async def send_batch_messages(client, chat_id, batch_db_id, reply_to_id=None):
 async def start_command(client, message):
     if message.chat.type == enums.ChatType.PRIVATE:
         user_id = message.from_user.id
+
+        # 💾 यूजर को डेटाबेस में ऑटो-रजिस्टर करें
+        await db.add_user(user_id, message.from_user.first_name)
 
         # Handle direct link sharing via start parameter (Deep Linking)
         if len(message.command) > 1:
@@ -151,20 +157,25 @@ async def start_command(client, message):
         bot_username = client.me.username
         bot_mention = f"[{bot_name}](https://t.me/{bot_username})"
 
-        anim_msg = await message.reply_text(
-            f"<blockquote>**__Hey 👋__**\n**__Welcome to {bot_mention} 😎__**</blockquote>",
-            quote=True
-        )
-        await asyncio.sleep(1.0)
-        await anim_msg.edit_text("⚡️")
-        await asyncio.sleep(0.8)
-        await anim_msg.edit_text("**__Starting bot...__** 😈")
-        await asyncio.sleep(0.7)
+        try:
+            anim_msg = await message.reply_text(
+                f"<blockquote>**__Hey 👋__**\n**__Welcome to {bot_mention} 😎__**</blockquote>",
+                quote=True
+            )
+            await asyncio.sleep(0.5)
+            await anim_msg.edit_text("⚡️")
+            await asyncio.sleep(0.5)
+            await anim_msg.edit_text("**__Starting bot...__** 😈")
+            await asyncio.sleep(0.5)
+            await anim_msg.delete()
+        except Exception:
+            pass
 
         await send_home_message(client, message)
-        await anim_msg.delete()
 
     elif message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        # 💾 ग्रुप को डेटाबेस में ऑटो-रजिस्टर करें
+        await db.add_group(message.chat.id, message.chat.title)
         await message.reply("Hey! I'm ready to search for stories 📖", quote=True)
 
 # ------------------------------------------------------------ #
@@ -174,6 +185,8 @@ async def start_command(client, message):
 async def added_to_group(client, message):
     for member in message.new_chat_members:
         if member.id == client.me.id:
+            # 💾 ग्रुप को डेटाबेस में रजिस्टर करें
+            await db.add_group(message.chat.id, message.chat.title)
             await message.reply(
                 "Thanks for adding me! 📖\n"
                 "Send the name of the story you want to search for.",
@@ -193,12 +206,12 @@ async def send_home_message(client, message, user=None, is_edit=False):
     bot_mention = f"[{bot_name}](https://t.me/{bot_username})"
 
     buttons = [
-        [InlineKeyboardButton("🔍 Online Search 🔎", switch_inline_query_current_chat="", style=enums.ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton('✇ Group ✇', url=REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS),
-         InlineKeyboardButton('✇ Updates ✇', url=f'https://t.me/{UPDATE_CHANNEL}', style=enums.ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton('〄 Help 〄', callback_data='help', style=enums.ButtonStyle.PRIMARY),
-         InlineKeyboardButton('⍟ About ⍟', callback_data='about', style=enums.ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton('⇋ Add to Group ⇋', url=f"http://t.me/{client.me.username}?startgroup&admin=delete_messages", style=enums.ButtonStyle.SUCCESS)]
+        [InlineKeyboardButton("🔍 Online Search 🔎", switch_inline_query_current_chat="")],
+        [InlineKeyboardButton('✇ Group ✇', url=REQUEST_GROUP),
+         InlineKeyboardButton('✇ Updates ✇', url=f'https://t.me/{UPDATE_CHANNEL}')],
+        [InlineKeyboardButton('〄 Help 〄', callback_data='help'),
+         InlineKeyboardButton('⍟ About ⍟', callback_data='about')],
+        [InlineKeyboardButton('⇋ Add to Group ⇋', url=f"http://t.me/{client.me.username}?startgroup&admin=delete_messages")]
     ]
 
     txt = (
@@ -245,7 +258,10 @@ async def callback_handler(client, query: CallbackQuery):
             batch_id = file_db_id.replace("batch_", "")
             success, err = await send_batch_messages(client, query.message.chat.id, batch_id, reply_to)
             if success:
-                await query.message.delete()
+                try:
+                    await query.message.delete()
+                except:
+                    pass
             else:
                 await query.answer(err or "❌ Batch not found or inaccessible.", show_alert=True)
         else:
@@ -253,7 +269,10 @@ async def callback_handler(client, query: CallbackQuery):
             if file_data:
                 success = await send_link_message(client, query.message.chat.id, file_data, reply_to)
                 if success:
-                    await query.message.delete()
+                    try:
+                        await query.message.delete()
+                    except:
+                        pass
                 else:
                     await query.answer("❌ Link not found or inaccessible.", show_alert=True)
             else:
@@ -279,18 +298,18 @@ async def callback_handler(client, query: CallbackQuery):
     elif data == "help":
         user_mention = query.from_user.mention
         btns = [
-            [InlineKeyboardButton('Group Settings', callback_data='help_settings', style=enums.ButtonStyle.SUCCESS),
-             InlineKeyboardButton('© Copyright', callback_data='help_copyright', style=enums.ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton('Extra Tools', callback_data='help_extra', style=enums.ButtonStyle.SUCCESS),
-             InlineKeyboardButton('User Guide', callback_data='help_guide', style=enums.ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton('TikTok Downloader', callback_data='help_d', style=enums.ButtonStyle.SUCCESS),
-             InlineKeyboardButton('Stats', callback_data='help_stats', style=enums.ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton('🆕 Telegraph', callback_data='help_telegraph', style=enums.ButtonStyle.PRIMARY),
-             InlineKeyboardButton('🆕 Video Tools', callback_data='help_exthumb', style=enums.ButtonStyle.PRIMARY)],
-            [InlineKeyboardButton('🏠 Home 🏠', callback_data='home', style=enums.ButtonStyle.DANGER)],
+            [InlineKeyboardButton('Group Settings', callback_data='help_settings'),
+             InlineKeyboardButton('© Copyright', callback_data='help_copyright')],
+            [InlineKeyboardButton('Extra Tools', callback_data='help_extra'),
+             InlineKeyboardButton('User Guide', callback_data='help_guide')],
+            [InlineKeyboardButton('TikTok Downloader', callback_data='help_d'),
+             InlineKeyboardButton('Stats', callback_data='help_stats')],
+            [InlineKeyboardButton('🆕 Telegraph', callback_data='help_telegraph'),
+             InlineKeyboardButton('🆕 Video Tools', callback_data='help_exthumb')],
+            [InlineKeyboardButton('🏠 Home 🏠', callback_data='home')],
         ]
         if user_id in ADMINS:
-            btns.insert(0, [InlineKeyboardButton('👮‍♂️ Admin Commands 👮‍♂️', callback_data='help_admin', style=enums.ButtonStyle.DANGER)])
+            btns.insert(0, [InlineKeyboardButton('👮‍♂️ Admin Commands 👮‍♂️', callback_data='help_admin')])
 
         await query.message.edit_media(
             InputMediaPhoto(PHOTO_URL, caption=f"<b>Hey {user_mention},\nHere you can get help for all my commands.</b>"),
@@ -318,7 +337,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<blockquote>• <code>/json</code> - Get the technical (JSON) info of the message.</blockquote>\n"
             "<blockquote>• <code>/written</code> [file name] - Converts the text into a text file.</blockquote>"
         )
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- ADMIN COMMANDS --------------------
@@ -342,7 +361,7 @@ async def callback_handler(client, query: CallbackQuery):
             "• <code>/broadcast_groups</code> - Broadcast to groups.\n"
             "• <code>/restart</code> - Restart the bot.</blockquote>"
         )
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- USER GUIDE --------------------
@@ -361,21 +380,21 @@ async def callback_handler(client, query: CallbackQuery):
             "</blockquote>"
         )
         btn = [
-            [InlineKeyboardButton('Go to Group 💬', url=REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]
+            [InlineKeyboardButton('Go to Group 💬', url=REQUEST_GROUP)],
+            [InlineKeyboardButton('← Back', callback_data='help')]
         ]
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
 
     # -------------------- COPYRIGHT --------------------
     elif data == "help_copyright":
         txt = "<b>© Copyright</b>\n\nLinks are indexed automatically from Telegram channels. We do not host content ourselves."
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- GROUP SETTINGS --------------------
     elif data == "help_settings":
         txt = "<b>⚙️ Group Settings</b>\n\nSend <code>/settings</code> in the group to set:\n• Display mode (buttons/text)\n• Search trigger (!)\n• Number of results"
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- STATISTICS --------------------
@@ -424,8 +443,8 @@ async def callback_handler(client, query: CallbackQuery):
             f"{db_info}"
         )
         refresh_btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY),
-             InlineKeyboardButton('↻ Refresh', callback_data='help_stats', style=enums.ButtonStyle.SUCCESS)]
+            [InlineKeyboardButton('← Back', callback_data='help'),
+             InlineKeyboardButton('↻ Refresh', callback_data='help_stats')]
         ])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=refresh_btn)
 
@@ -447,9 +466,9 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>╚══════════════════❍⊱❁۪۪</b></blockquote>"
         )
         btn = [
-            [InlineKeyboardButton('🐙 Source Code 🐙', url='https://github.com/Tj-Bots/Auto-Filter', style=enums.ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton('← Back', callback_data='home', style=enums.ButtonStyle.PRIMARY),
-             InlineKeyboardButton('✘ Close', callback_data='closea', style=enums.ButtonStyle.DANGER)]
+            [InlineKeyboardButton('🐙 Source Code 🐙', url='https://github.com/Tj-Bots/Auto-Filter')],
+            [InlineKeyboardButton('← Back', callback_data='home'),
+             InlineKeyboardButton('✘ Close', callback_data='closea')]
         ]
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
 
@@ -460,7 +479,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>◉ Command:</b>\n<blockquote>/d</blockquote>\n\n"
             "<b>◉ How to use:</b>\n<blockquote>Send the command with a link or reply to a link.</blockquote>"
         )
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- TELEGRAPH HELP --------------------
@@ -470,7 +489,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>◉ Command:</b>\n<blockquote>/telegraph</blockquote>\n\n"
             "<b>◉ How to use:</b>\n<blockquote>Reply to an image with the command.</blockquote>"
         )
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- VIDEO TOOLS HELP --------------------
@@ -483,7 +502,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<blockquote>/extract_thumbnail</blockquote>\n\n"
             "<b>How to use:</b>\n<blockquote>Reply to a video/file with the command.</blockquote>"
         )
-        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help')]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
     # -------------------- CLOSE / NOOP --------------------
