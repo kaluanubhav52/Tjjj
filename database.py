@@ -63,6 +63,7 @@ class Database:
             return None
 
     async def search_files(self, query):
+        # क्वेरी में से स्पेशल कैरेक्टर हटाना
         clean_query = re.sub(r'[._\-]', ' ', query)
         words = clean_query.split()
         
@@ -71,25 +72,17 @@ class Database:
             escaped_word = re.escape(word)
             regex_list.append(re.compile(escaped_word, re.IGNORECASE))
         
-        cursor = self.files.find({"file_name": {"$all": regex_list}})
+        # डेटाबेस से मैचिंग टाइटल्स ढूंढना और लेटेस्ट को पहले दिखाना (_id: -1)
+        cursor = self.files.find({"file_name": {"$all": regex_list}}).sort("_id", -1)
         results = await cursor.to_list(length=1000)
         
-        def sort_key(item):
-            name = item.get('file_name', '')
-            s = re.search(r'(?:עונה|season|s)\s*(\d+)', name, re.I)
-            e = re.search(r'(?:פרק|episode|e)\s*(\d+)', name, re.I)
-            season = int(s.group(1)) if s else 0
-            episode = int(e.group(1)) if e else 0
-            return (season, episode)
-
-        results.sort(key=sort_key)
         return results
 
     async def get_all_file_names(self):
-        """ Fuzzy matching ke liye optimized unique latest file names fetch karta hai """
+        """ Fuzzy matching के लिए optimized unique latest file names fetch करता है """
         if self.files is None: return []
         try:
-            # Memory optimized projection (sirf file_name nikalega) aur latest 1500 items tak limited
+            # Memory optimized projection (सिर्फ file_name निकालेगा) और latest 1500 items तक सीमित
             cursor = self.files.find({}, {"file_name": 1, "_id": 0}).sort("_id", -1).limit(1500)
             results = await cursor.to_list(length=1500)
             return [doc["file_name"] for doc in results if "file_name" in doc]
@@ -135,7 +128,7 @@ class Database:
         result = await self.files.delete_many({'chat_id': chat_id})
         return result.deleted_count
 
-    async def ban_user(self, user_id, reason="לא צוינה סיבה"):
+    async def ban_user(self, user_id, reason="No reason specified"):
         await self.banned.update_one(
             {'_id': user_id}, 
             {'$set': {'_id': user_id, 'reason': reason}}, 
@@ -149,7 +142,7 @@ class Database:
         if self.banned is None: return None
         return await self.banned.find_one({'_id': user_id})
 
-    async def ban_chat(self, chat_id, reason="לא צוינה סיבה"):
+    async def ban_chat(self, chat_id, reason="No reason specified"):
         await self.banned_chats.update_one(
             {'_id': chat_id}, 
             {'$set': {'_id': chat_id, 'reason': reason}}, 
