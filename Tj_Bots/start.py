@@ -3,7 +3,6 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
 from config import UPDATE_CHANNEL, REQUEST_GROUP, PHOTO_URL, ADMINS, LOG_CHANNEL, AUTH_CHANNEL_FORCE
 from database import db
-# get_readable_size हटा दिया क्योंकि अब लिंक्स का कोई साइज नहीं होता
 
 # ------------------------------------------------------------ #
 #                        LINK SEND HELPER                       #
@@ -11,7 +10,7 @@ from database import db
 async def send_link_message(client, chat_id, file_data, reply_to_id=None):
     """यूजर को स्टोरी का नाम और उसका कस्टम लिंक सेंड करने के लिए helper function"""
     title = file_data.get('file_name', 'Story')
-    custom_link = file_data.get('file_id') # index.py में हमने file_id की जगह लिंक सेव किया था
+    custom_link = file_data.get('file_id') # डेटाबेस में सुरक्षित लिंक
     
     if not custom_link:
         return False
@@ -33,7 +32,7 @@ async def send_link_message(client, chat_id, file_data, reply_to_id=None):
             text=text,
             reply_markup=keyboard,
             reply_to_message_id=reply_to_id,
-            disable_web_page_preview=True # ताकि टेलीग्राम में बकवास प्रीव्यू लोड न हो
+            disable_web_page_preview=True
         )
         return True
     except Exception as e:
@@ -216,7 +215,7 @@ async def callback_handler(client, query: CallbackQuery):
             btns.insert(0, [InlineKeyboardButton('👮‍♂️ Admin Commands 👮‍♂️', callback_data='help_admin', style=enums.ButtonStyle.DANGER)])
 
         await query.message.edit_media(
-            InputMediaPhoto(PHOTO_URL, caption=f"<b>Hey {user_mention Han},\nHere you can get help for all my commands.</b>"),
+            InputMediaPhoto(PHOTO_URL, caption=f"<b>Hey {user_mention},\nHere you can get help for all my commands.</b>"),
             reply_markup=InlineKeyboardMarkup(btns)
         )
 
@@ -316,7 +315,7 @@ async def callback_handler(client, query: CallbackQuery):
 
         MAX_DB_SIZE = 536870912
         users = await db.users.count_documents({})
-        files = await db.files.count_documents({})  # files collection hi humare links hold kar raha hai
+        files = await db.files.count_documents({})
         groups = await db.groups.count_documents({})
 
         try:
