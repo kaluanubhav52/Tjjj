@@ -1,9 +1,9 @@
+import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from database import db
 from config import UPDATE_CHANNEL
 from .utils import clean_filename  # get_readable_size हटा दिया क्योंकि अब साइज़ की ज़रूरत नहीं है
-import asyncio
 from thefuzz import process
 
 # ⏱️ बैकग्राउंड टास्क: सजेशन्स को 1 मिनट में डिलीट करने के लिए
@@ -59,7 +59,9 @@ async def search_handler(client, message):
                 # OPTION A: Agar close typos hain, toh fuzzy suggestions buttons dikhao
                 suggest_keyboard = []
                 for item in suggestions:
-                    suggest_keyboard.append([InlineKeyboardButton(f"📖 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
+                    # ⚠️ Safe UTF-8 byte-slicing ताकि Telegram की 64-byte Callback लिमिट से बोट क्रैश न हो
+                    safe_callback = item.encode('utf-8')[:50].decode('utf-8', 'ignore').strip()
+                    suggest_keyboard.append([InlineKeyboardButton(f"📖 {item[:45]}", callback_data=f"fuzz_{safe_callback}")])
                 
                 suggest_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
@@ -171,9 +173,13 @@ async def send_results_page(client, message, results, page, query, settings, is_
     if display_mode == 'inline':
         for res in current_batch:
             clean = clean_filename(res['file_name'])
-            # साइज़ हटाकर बटन को सिर्फ टाइटल (Name) के साथ क्लीन लुक दिया है
             btn_text = f"📖 {clean}"
             file_id = str(res['_id'])
+            
+            # 🚀 अगर यह एक बैच फ़ाइल है, तो इसके ID के आगे 'batch_' लगा दें ताकि start.py इसे सीधे पहचान सके
+            if "start_id" in res:
+                file_id = f"batch_{file_id}"
+                
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"dl_{file_id}")])
             
     else:
@@ -182,6 +188,11 @@ async def send_results_page(client, message, results, page, query, settings, is_
             prefix = chars[i] if i < len(chars) else str(i+1)
             clean = clean_filename(res['file_name'])
             file_id = str(res['_id'])
+            
+            # 🚀 टेक्स्ट मोड में भी बैच के लिए 'batch_' प्रीफिक्स जोड़ें
+            if "start_id" in res:
+                file_id = f"batch_{file_id}"
+                
             link = f"https://t.me/{bot_username}?start={file_id}"
             text += f"📖 **{prefix}. [{clean}]({link})**\n\n"
 
