@@ -2,7 +2,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from database import db
 from config import UPDATE_CHANNEL
-from .utils import get_readable_size, clean_filename
+from .utils import clean_filename  # get_readable_size हटा दिया क्योंकि अब साइज़ की ज़रूरत नहीं है
 import asyncio
 from thefuzz import process
 
@@ -59,7 +59,7 @@ async def search_handler(client, message):
                 # OPTION A: Agar close typos hain, toh fuzzy suggestions buttons dikhao
                 suggest_keyboard = []
                 for item in suggestions:
-                    suggest_keyboard.append([InlineKeyboardButton(f"🎬 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
+                    suggest_keyboard.append([InlineKeyboardButton(f"📖 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
                 
                 suggest_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
@@ -125,13 +125,13 @@ async def handle_suggestion_click(client, query: CallbackQuery):
             pass
         await send_results_page(client, query.message, results, 1, suggested_query, settings, is_edit=False)
     else:
-        await query.answer("Could not find files for this suggestion.", show_alert=True)
+        await query.answer("Could not find results for this suggestion.", show_alert=True)
 
 @Client.on_callback_query(filters.regex(r"^dl_"))
 async def handle_search_click(client, query: CallbackQuery):
     file_id = query.data.split("_")[1]
     bot_username = client.me.username
-    # बटन क्लिक करने पर यूजर सीधा बोट के PM में डीप-लिंक के साथ रीडायरेक्ट हो जाएगा
+    # बटन क्लिक करने पर यूजर सीधा बोट के PM में डीप-लिंक के साथ रीडायरेक्ट हो जाएगा (MongoDB _id के साथ)
     await query.answer(url=f"https://t.me/{bot_username}?start={file_id}")
 
 @Client.on_callback_query(filters.regex(r"^search#"))
@@ -171,8 +171,8 @@ async def send_results_page(client, message, results, page, query, settings, is_
     if display_mode == 'inline':
         for res in current_batch:
             clean = clean_filename(res['file_name'])
-            size = get_readable_size(res['file_size'])
-            btn_text = f"[{size}] {clean}"
+            # साइज़ हटाकर बटन को सिर्फ टाइटल (Name) के साथ क्लीन लुक दिया है
+            btn_text = f"📖 {clean}"
             file_id = str(res['_id'])
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"dl_{file_id}")])
             
@@ -183,7 +183,7 @@ async def send_results_page(client, message, results, page, query, settings, is_
             clean = clean_filename(res['file_name'])
             file_id = str(res['_id'])
             link = f"https://t.me/{bot_username}?start={file_id}"
-            text += f"🎬 **{prefix}. [{clean}]({link})**\n\n"
+            text += f"📖 **{prefix}. [{clean}]({link})**\n\n"
 
     nav = []
     if page > 1: nav.append(InlineKeyboardButton('⬅️', callback_data=f"search#{query}#{page-1}"))
