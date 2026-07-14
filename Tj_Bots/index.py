@@ -86,18 +86,30 @@ async def index_handler(client, message):
             continue
 
         for msg in messages:
-            if not msg or not msg.media: continue
-            if msg.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT, enums.MessageMediaType.AUDIO]: continue
+            # मीडिया की जगह अब हम सिर्फ टेक्स्ट मैसेजेस चेक करेंगे
+            if not msg or not msg.text: continue
             
-            media = getattr(msg, msg.media.value, None)
-            if not media: continue
+            msg_text = msg.text.strip()
+            # मैसेज को लाइनों में तोड़ना ताकि नाम और लिंक अलग हो सके
+            lines = [line.strip() for line in msg_text.split("\n") if line.strip()]
             
-            file_name = getattr(media, 'file_name', None) or msg.caption or f"File {msg.id}"
+            # अगर कम से कम 2 लाइनें नहीं हैं (यानी नाम और लिंक दोनों मौजूद नहीं हैं), तो इग्नोर करें
+            if len(lines) < 2: continue
+            
+            title = lines[0]  # पहली लाइन = कहानी/चैनल का नाम
+            custom_link = lines[1]  # दूसरी लाइन = आपका कस्टम लिंक
+            
+            # पुराने डेटाबेस स्ट्रक्चर के हिसाब से डेटा मैप करना
             data = {
-                'file_unique_id': media.file_unique_id, 'file_id': media.file_id,
-                'file_name': file_name, 'file_size': media.file_size,
-                'chat_id': chat_id, 'message_id': msg.id, 'caption': msg.caption or ""
+                'file_unique_id': f"lnk_{chat_id}_{msg.id}", # डुप्लीकेट चेक के लिए यूनिक आईडी
+                'file_id': custom_link,                       # फाइल आईडी की जगह आपका लिंक जाएगा
+                'file_name': title,                           # फाइल नेम की जगह आपका टाइटल जाएगा
+                'file_size': 0,                               # टेक्स्ट का कोई साइज नहीं होता
+                'chat_id': chat_id, 
+                'message_id': msg.id, 
+                'caption': msg_text
             }
+            
             res = await db.save_file(data)
             if res == "saved": total_saved += 1
             else: total_dups += 1
@@ -108,7 +120,7 @@ async def index_handler(client, message):
             try:
                 processed = min(current_id, end_id)
                 await status.edit(
-                    f"⏳ **Saving files...**\n"
+                    f"⏳ **Saving Links...**\n"
                     f"📍 Processing message: `{processed}` / `{end_id}`\n\n"
                     f"✅ Saved: `{total_saved}`\n"
                     f"♻️ Duplicates: `{total_dups}`",
@@ -143,20 +155,27 @@ async def new_channel_watch(client, message):
         await message.reply(f"✅ Channel `{chat_id}` added to watchlist successfully!", quote=True)
     except Exception as e: await message.reply(f"❌ Error: {e}", quote=True)
 
-@Client.on_message(filters.channel)
+# लाइव चैनल मॉनिटरिंग हैंडलर (जब चैनल में नई पोस्ट आएगी)
+@Client.on_message(filters.channel & filters.text)
 async def live_watcher(client, message):
     watched = await db.get_watched_channels()
-    if message.chat.id not in watched or not message.media: return
+    if message.chat.id not in watched: return
     
-    if message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT, enums.MessageMediaType.AUDIO]: return
-
-    media = getattr(message, message.media.value, None)
-    if not media: return
-
-    file_name = getattr(media, 'file_name', None) or message.caption or f"File {message.id}"
+    msg_text = message.text.strip()
+    lines = [line.strip() for line in msg_text.split("\n") if line.strip()]
+    
+    if len(lines) < 2: return
+    
+    title = lines[0]
+    custom_link = lines[1]
+    
     data = {
-        'file_unique_id': media.file_unique_id, 'file_id': media.file_id,
-        'file_name': file_name, 'file_size': media.file_size,
-        'chat_id': message.chat.id, 'message_id': message.id, 'caption': message.caption or ""
+        'file_unique_id': f"lnk_{message.chat.id}_{message.id}",
+        'file_id': custom_link,
+        'file_name': title,
+        'file_size': 0,
+        'chat_id': message.chat.id,
+        'message_id': message.id,
+        'caption': msg_text
     }
     await db.save_file(data)
