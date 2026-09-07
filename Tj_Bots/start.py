@@ -3,41 +3,50 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
 from config import UPDATE_CHANNEL, REQUEST_GROUP, PHOTO_URL, ADMINS, LOG_CHANNEL, AUTH_CHANNEL_FORCE
 from database import db
+from .utils import get_readable_size
 
 # ------------------------------------------------------------ #
-#                        LINK SEND HELPER                       #
+#                        FILE SEND HELPER                       #
 # ------------------------------------------------------------ #
-async def send_link_message(client, chat_id, file_data, reply_to_id=None):
-    """यूजर को स्टोरी का नाम और उसका कस्टम लिंक सेंड करने के लिए helper function"""
-    title = file_data.get('file_name', 'Story')
-    custom_link = file_data.get('file_id') # डेटाबेस में सुरक्षित लिंक
-    
-    if not custom_link:
-        return False
-
-    text = (
-        f"<b><tg-emoji emoji-id='5397782960512444700'>📌</tg-emoji> यहाँ आपकी स्टोरी का लिंक है:</b>\n\n"
-        f"🔹 <b>Name:</b> <code>{title}</code>\n\n"
-        f"🔗 <b>Link:</b> {custom_link}\n\n"
-        f"<i>🚀 लिंक पर क्लिक करके आप अपनी स्टोरी देख सकते हैं।</i>"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Open Link", url=custom_link)]
-    ])
-
+async def send_file_with_fallback(client, chat_id, file_data, reply_to_id=None):
+    """Try to copy message, fallback to send_video or send_document"""
     try:
-        await client.send_message(
+        await client.copy_message(
             chat_id=chat_id,
-            text=text,
-            reply_markup=keyboard,
-            reply_to_message_id=reply_to_id,
-            disable_web_page_preview=True
+            from_chat_id=file_data['chat_id'],
+            message_id=file_data['message_id'],
+            caption=None,
+            reply_to_message_id=reply_to_id
         )
         return True
-    except Exception as e:
-        print(f"Error sending link message: {e}")
-        return False
+    except:
+        file_id = file_data.get('file_id')
+        if not file_id:
+            return False
+
+        file_name = file_data.get('file_name', '')
+        file_size = get_readable_size(file_data.get('file_size', 0))
+        fallback_caption = f"**{file_name}**\n\n**💾 Size: {file_size}**"
+
+        try:
+            await client.send_video(
+                chat_id=chat_id,
+                video=file_id,
+                caption=fallback_caption,
+                reply_to_message_id=reply_to_id
+            )
+            return True
+        except:
+            try:
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption=fallback_caption,
+                    reply_to_message_id=reply_to_id
+                )
+                return True
+            except:
+                return False
 
 # ------------------------------------------------------------ #
 #                           START CMD                           #
@@ -47,7 +56,7 @@ async def start_command(client, message):
     if message.chat.type == enums.ChatType.PRIVATE:
         user_id = message.from_user.id
 
-        # Handle direct link sharing via start parameter (Deep Linking)
+        # Handle direct file sharing via start parameter
         if len(message.command) > 1:
             file_db_id = message.command[1]
 
@@ -73,9 +82,9 @@ async def start_command(client, message):
 
             file_data = await db.get_file(file_db_id)
             if file_data:
-                success = await send_link_message(client, message.chat.id, file_data, message.id)
+                success = await send_file_with_fallback(client, message.chat.id, file_data, message.id)
                 if not success:
-                    await message.reply("❌ The link was deleted or inaccessible.", quote=True)
+                    await message.reply("❌ The file was deleted or inaccessible.", quote=True)
             return
 
         # Normal start animation and home message
@@ -97,7 +106,7 @@ async def start_command(client, message):
         await anim_msg.delete()
 
     elif message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        await message.reply("Hey! I'm ready to search for stories 📖", quote=True)
+        await message.reply("Hey! I'm ready to search for movies 🎬", quote=True)
 
 # ------------------------------------------------------------ #
 #                      GROUP ADD HANDLER                        #
@@ -107,8 +116,8 @@ async def added_to_group(client, message):
     for member in message.new_chat_members:
         if member.id == client.me.id:
             await message.reply(
-                "Thanks for adding me! 📖\n"
-                "Send the name of the story you want to search for.",
+                "Thanks for adding me! 🎬\n"
+                "Send the name of the movie/series you want to search for.",
                 quote=True
             )
 
@@ -136,8 +145,8 @@ async def send_home_message(client, message, user=None, is_edit=False):
     txt = (
         f"**Hey {user_mention} 👋**\n"
         f"**Welcome to {bot_mention}** 😎\n\n"
-        "**I am an innovative story and custom link search engine,**\n"
-        "<b>My job is to search for stories in groups,\n"
+        "**I am an innovative movie and series search engine,**\n"
+        "<b>My job is to search for movies in groups,\n"
         "Add me to your group and I'll take it from here.</b> ☄️\n\n"
         "<blockquote>**👨🏼‍💻 Lead Developer: @TJ_Bots_Admin**</blockquote>"
     )
@@ -155,7 +164,7 @@ async def callback_handler(client, query: CallbackQuery):
     data = query.data
     user_id = query.from_user.id
 
-    # Handle subscription check for files/links
+    # Handle subscription check for files
     if data.startswith("checksub_"):
         file_db_id = data.split("_")[1]
         should_check = AUTH_CHANNEL_FORCE
@@ -173,13 +182,13 @@ async def callback_handler(client, query: CallbackQuery):
         file_data = await db.get_file(file_db_id)
         if file_data:
             reply_to = query.message.reply_to_message.id if query.message.reply_to_message else None
-            success = await send_link_message(client, query.message.chat.id, file_data, reply_to)
+            success = await send_file_with_fallback(client, query.message.chat.id, file_data, reply_to)
             if success:
                 await query.message.delete()
             else:
-                await query.answer("❌ Link not found or inaccessible.", show_alert=True)
+                await query.answer("❌ File not found or inaccessible.", show_alert=True)
         else:
-            await query.answer("❌ Link not found in database.", show_alert=True)
+            await query.answer("❌ File not found in database.", show_alert=True)
         return
 
     # Admin-only protection
@@ -248,8 +257,8 @@ async def callback_handler(client, query: CallbackQuery):
         txt = (
             "<b><u>Admin Control Panel:</u></b>\n\n"
             "<b>◉ Content Management:</b>\n"
-            "<blockquote>• <code>/index</code> [link] - [start] - Add links from a channel text (by range).\n"
-            "• <code>/newindex</code> [ID] - Track new text content in a channel.\n"
+            "<blockquote>• <code>/index</code> [link] - [start] - Add files from a channel (by range).\n"
+            "• <code>/newindex</code> [ID] - Track new content in a channel.\n"
             "• <code>/channels</code> - Manage tracked channels.</blockquote>\n\n"
             "<b>◉ Users and Groups:</b>\n"
             "<blockquote>• <code>/ban</code> [ID] - Ban a user.\n"
@@ -271,13 +280,13 @@ async def callback_handler(client, query: CallbackQuery):
         txt = (
             "<blockquote>"
             "⚙️ <b><u> Search Robot Guide</u></b> 💡\n\n"
-            "To request a story, write the exact name.\n\n"
+            "To request a movie or series, write the exact name.\n\n"
             "<b><i><u>✅ Correct examples:</u></i></b>\n"
-            "Marvel Zombies Full Story\n"
-            "Spider-Man Explainer\n\n"
+            "Ashamti\n"
+            "Fast and Furious\n\n"
             "<b><i><u>❌ Incorrect examples:</u></i></b>\n"
-            "Do you have Marvel Zombies?\n"
-            "Give me the link please\n\n"
+            "Do you have Harry Potter?\n"
+            "Can I get Harry Potter?\n\n"
             "<b>Got it? Try it now!</b>\n"
             "</blockquote>"
         )
@@ -289,7 +298,7 @@ async def callback_handler(client, query: CallbackQuery):
 
     # -------------------- COPYRIGHT --------------------
     elif data == "help_copyright":
-        txt = "<b>© Copyright</b>\n\nLinks are indexed automatically from Telegram channels. We do not host content ourselves."
+        txt = "<b>© Copyright</b>\n\nFiles are collected automatically from Telegram. We do not upload content ourselves."
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
         await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
 
@@ -339,7 +348,7 @@ async def callback_handler(client, query: CallbackQuery):
         txt = (
             f"📊 <u>**Bot Statistics:**</u>\n\n"
             f"🤖 <u>**Bot Status:**</u>\n"
-            f"<blockquote>★ **Indexed Links:** `{files}`\n"
+            f"<blockquote>★ **Files:** `{files}`\n"
             f"★ **Users:** `{users}`\n"
             f"★ **Groups:** `{groups}`</blockquote>\n\n"
             f"{db_info}"
