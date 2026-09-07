@@ -1,12 +1,14 @@
+import asyncio
+import re
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from database import db
 from config import UPDATE_CHANNEL
-from .utils import clean_filename  # get_readable_size हटा दिया क्योंकि अब साइज़ की ज़रूरत नहीं है
-import asyncio
+from .utils import get_readable_size, clean_filename
 from thefuzz import process
 
-# ⏱️ बैकग्राउंड टास्क: सजेशन्स को 1 मिनट में डिलीट करने के लिए
+
+# ⏱️ Background Task: Delete suggestions after 1 minute
 async def auto_delete_message(message, delay):
     await asyncio.sleep(delay)
     try:
@@ -14,52 +16,94 @@ async def auto_delete_message(message, delay):
     except Exception:
         pass
 
-# ⏳ बैकग्राउंड टास्क: सर्च रिज़ल्ट को 5 मिनट में एक्सपायर करने के लिए
+
+# ⏳ Background Task: Expire search results after 5 minutes
 async def auto_expire_results(message, delay):
     await asyncio.sleep(delay)
     try:
         await message.edit_text(
-            text="⏳ **Time Expired!**\n\nयह सर्च रिज़ल्ट 5 मिनट पुराने होने के कारण सुरक्षा के लिए एक्सपायर हो गया है। कृपया दोबारा नाम लिखकर सर्च करें।",
+            text="⏳ **Time Expired!**\n\nThis search result has expired for safety reasons after 5 minutes. Please type the name again to search.",
             reply_markup=None
         )
     except Exception:
         pass
 
-@Client.on_message(filters.text & ~filters.command(["start", "index", "newindex", "settings", "broadcast", "broadcast_groups", "stats", "restart", "clean", "channels", "watch", "font", "share", "tts", "paste"]))
+
+@Client.on_message(filters.text & ~filters.command([
+    "start", "index", "newindex", "settings", "broadcast", "broadcast_groups", 
+    "stats", "restart", "clean", "channels", "watch", "font", "share", "tts", "paste"
+]))
 async def search_handler(client, message):
-    query = message.text
-    if query.startswith("/"): return
+    query = message.text.strip()
+    if query.startswith("/"):
+        return
+    
     chat_id = message.chat.id
     
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         await db.add_group(chat_id, message.chat.title)
         settings = await db.get_settings(chat_id)
-        if settings.get('search_trigger') == 'bang' and not query.startswith('!'): return
-        if query.startswith('!'): query = query[1:].strip()
+        if settings.get('search_trigger') == 'bang' and not query.startswith('!'):
+            return
+        if query.startswith('!'):
+            query = query[1:].strip()
     else:
         settings = await db.get_settings(chat_id)
 
-    if len(query) < 2: return
+    if len(query) < 2:
+        return
+
+    # ---------------------------------------------------------
+    # 🎧 EPISODIC RANGE EXTRACTION LOGIC
+    # Detects patterns like: "My Possessive Ep 6", "My Possessive Episode 06", "My Possessive Ep.6"
+    # ---------------------------------------------------------
+    ep_pattern = re.search(r'^(.*?)\s*(?:ep|episode|e)\.?\s*(\d+)', query, re.IGNORECASE)
+    extracted_series_name = None
+    requested_ep_num = None
+
+    if ep_pattern:
+        extracted_series_name = ep_pattern.group(1).strip()
+        requested_ep_num = int(ep_pattern.group(2))
 
     # 1. Exact Database Search
     results = await db.search_files(query)
-    
-    # 2. If NO Results Found
+
+    # 2. Episode Range Fallback Search (e.g., handles searching "Ep 6" inside "1 To 10" file)
+    if not results and extracted_series_name:
+        series_results = await db.search_files(extracted_series_name)
+        matched_range_files = []
+
+        for file_doc in series_results:
+            file_name = file_doc.get("file_name", "")
+            
+            # Matches ranges like "1 To 10", "1-10", "Ep 01-10", "Episode 1 to 10"
+            range_match = re.search(r'(?:ep|episode)?\s*(\d+)\s*(?:to|-)\s*(\d+)', file_name, re.IGNORECASE)
+            
+            if range_match:
+                start_ep = int(range_match.group(1))
+                end_ep = int(range_match.group(2))
+                
+                # Check if requested episode falls inside range
+                if start_ep <= requested_ep_num <= end_ep:
+                    matched_range_files.append(file_doc)
+
+        if matched_range_files:
+            results = matched_range_files
+
+    # 3. If NO Results Found
     if not results:
         try:
             all_files = await db.get_all_file_names()
             suggestions = []
             
             if all_files:
-                # Top 4 suggestions nikalenge jinka match 45% se upar ho
                 matches = process.extract(query, all_files, limit=4)
                 suggestions = [text for text, score in matches if score >= 45]
                 
             if suggestions:
-                # OPTION A: Agar close typos hain, toh fuzzy suggestions buttons dikhao
                 suggest_keyboard = []
                 for item in suggestions:
-                    suggest_keyboard.append([InlineKeyboardButton(f"📖 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
+                    suggest_keyboard.append([InlineKeyboardButton(f"🎬 {item[:45]}", callback_data=f"fuzz_{item[:40]}")])
                 
                 suggest_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
@@ -68,11 +112,9 @@ async def search_handler(client, message):
                     reply_markup=InlineKeyboardMarkup(suggest_keyboard),
                     quote=True
                 )
-                # ⏰ 1 मिनट बाद सुझाव वाले मेसेज को डिलीट करने का टाइमर
                 asyncio.create_task(auto_delete_message(suggest_msg, 60))
                 return
             else:
-                # OPTION B: Agar totally different word hai (Fuzzy fail), toh GOOGLE BUTTON OPTION do
                 google_encoded_query = query.replace(" ", "+")
                 google_url = f"https://www.google.com/search?q={google_encoded_query}"
                 
@@ -87,11 +129,10 @@ async def search_handler(client, message):
                 
                 fail_msg = await message.reply_text(
                     f"**No results found for: `{query}`** <tg-emoji emoji-id='5924497670721769339'>🙅‍♂️</tg-emoji>\n\n"
-                    f"Mujhe database mein isse milta-julta kuch nahi mila. Aap niche diye gaye button ka use karke Google par search kar sakte hain:",
+                    f"I couldn't find anything similar in the database. You can search on Google using the button below:",
                     reply_markup=InlineKeyboardMarkup(fail_keyboard),
                     quote=True
                 )
-                # ⏰ 1 मिनट बाद फेल मेसेज को डिलीट करने का टाइमर
                 asyncio.create_task(auto_delete_message(fail_msg, 60))
                 return
 
@@ -99,7 +140,7 @@ async def search_handler(client, message):
             print(f"Error in suggestions/google fallback: {e}")
             try:
                 await message.reply(f"**No results found for: `{query}`**", quote=True)
-            except:
+            except Exception:
                 pass
         return
 
@@ -108,7 +149,8 @@ async def search_handler(client, message):
     except Exception as e:
         print(f"Error sending results: {e}")
 
-# Callback Handler for Suggestion Buttons Click
+
+# Callback Handler for Suggestion Buttons
 @Client.on_callback_query(filters.regex(r"^fuzz_"))
 async def handle_suggestion_click(client, query: CallbackQuery):
     suggested_query = query.data.replace("fuzz_", "")
@@ -118,24 +160,26 @@ async def handle_suggestion_click(client, query: CallbackQuery):
     results = await db.search_files(suggested_query)
     
     if results:
-        # नई सर्च शुरू करने से पहले पुराने सजेशन मेसेज को डिलीट कर देते हैं
         try:
             await query.message.delete()
-        except:
+        except Exception:
             pass
         await send_results_page(client, query.message, results, 1, suggested_query, settings, is_edit=False)
     else:
-        await query.answer("Could not find results for this suggestion.", show_alert=True)
+        await query.answer("Could not find files for this suggestion.", show_alert=True)
 
+
+# Callback Handler for File Link Click
 @Client.on_callback_query(filters.regex(r"^dl_"))
 async def handle_search_click(client, query: CallbackQuery):
     file_id = query.data.split("_")[1]
     bot_username = client.me.username
-    # बटन क्लिक करने पर यूजर सीधा बोट के PM में डीप-लिंक के साथ रीडायरेक्ट हो जाएगा (MongoDB _id के साथ)
     await query.answer(url=f"https://t.me/{bot_username}?start={file_id}")
 
+
+# Callback Handler for Pagination Buttons
 @Client.on_callback_query(filters.regex(r"^search#"))
-async def search_pagination(client, query):
+async def search_pagination(client, query: CallbackQuery):
     try:
         _, q_str, page_str = query.data.split("#")
         page = int(page_str)
@@ -148,6 +192,7 @@ async def search_pagination(client, query):
         await send_results_page(client, query.message, results, page, q_str, settings, is_edit=True)
     except Exception as e:
         print(f"Error in pagination: {e}")
+
 
 async def send_results_page(client, message, results, page, query, settings, is_edit=False):
     per_page = settings.get('results_per_page', 10)
@@ -171,24 +216,27 @@ async def send_results_page(client, message, results, page, query, settings, is_
     if display_mode == 'inline':
         for res in current_batch:
             clean = clean_filename(res['file_name'])
-            # साइज़ हटाकर बटन को सिर्फ टाइटल (Name) के साथ क्लीन लुक दिया है
-            btn_text = f"📖 {clean}"
+            size = get_readable_size(res['file_size'])
+            btn_text = f"[{size}] {clean}"
             file_id = str(res['_id'])
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"dl_{file_id}")])
             
     else:
         chars = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']
         for i, res in enumerate(current_batch):
-            prefix = chars[i] if i < len(chars) else str(i+1)
+            prefix = chars[i] if i < len(chars) else str(i + 1)
             clean = clean_filename(res['file_name'])
             file_id = str(res['_id'])
             link = f"https://t.me/{bot_username}?start={file_id}"
-            text += f"📖 **{prefix}. [{clean}]({link})**\n\n"
+            text += f"🎬 **{prefix}. [{clean}]({link})**\n\n"
 
     nav = []
-    if page > 1: nav.append(InlineKeyboardButton('⬅️', callback_data=f"search#{query}#{page-1}"))
-    if page < total_pages: nav.append(InlineKeyboardButton('➡️', callback_data=f"search#{query}#{page+1}"))
-    if nav: keyboard.append(nav)
+    if page > 1:
+        nav.append(InlineKeyboardButton('⬅️', callback_data=f"search#{query}#{page-1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton('➡️', callback_data=f"search#{query}#{page+1}"))
+    if nav:
+        keyboard.append(nav)
     
     keyboard.append([InlineKeyboardButton(f"‏ ￶‏ ￶📃 Page {page}/{total_pages}", callback_data="noop")])
 
@@ -198,5 +246,4 @@ async def send_results_page(client, message, results, page, query, settings, is_
         await message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     else:
         res_msg = await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True, quote=True)
-        # ⏳ 5 मिनट का एक्सपायरी टाइमर यहाँ एक्टिवेट होगा (सिर्फ फ्रेश मेसेज भेजने पर)
         asyncio.create_task(auto_expire_results(res_msg, 300))
