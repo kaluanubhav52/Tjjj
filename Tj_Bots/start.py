@@ -23,7 +23,7 @@ async def send_file_with_fallback(client, chat_id, file_data, reply_to_id=None):
             reply_to_message_id=reply_to_id
         )
         return True
-    except:
+    except Exception:
         file_id = file_data.get('file_id')
         if not file_id:
             return False
@@ -40,7 +40,7 @@ async def send_file_with_fallback(client, chat_id, file_data, reply_to_id=None):
                 reply_to_message_id=reply_to_id
             )
             return True
-        except:
+        except Exception:
             try:
                 await client.send_document(
                     chat_id=chat_id,
@@ -49,7 +49,7 @@ async def send_file_with_fallback(client, chat_id, file_data, reply_to_id=None):
                     reply_to_message_id=reply_to_id
                 )
                 return True
-            except:
+            except Exception:
                 return False
 
 # ------------------------------------------------------------ #
@@ -64,7 +64,11 @@ async def start_command(client, message):
         # ---------------- TOKEN VERIFICATION RETURN HANDLER ---------------- #
         if param.startswith("notcopy_") or param.startswith("sendall_"):
             try:
-                _, u_id, verify_id, file_db_id = param.split("_", 3)
+                params_parts = param.split("_", 3)
+                if len(params_parts) < 4:
+                    return await message.reply_text("❌ Invalid link structure.")
+
+                prefix, u_id, verify_id, file_db_id = params_parts
                 
                 if int(u_id) != user_id:
                     return await message.reply_text("❌ Invalid link ownership.")
@@ -74,35 +78,44 @@ async def start_command(client, message):
                     return await message.reply_text("❌ **Invalid or Expired Link!** Please try again.")
 
                 if verify_info.get("verified"):
+                    # Agar link already use ho chuki hai fir bhi direct file check karenge
+                    file_data = await db.get_file(file_db_id)
+                    if file_data:
+                        return await send_file_with_fallback(client, message.chat.id, file_data, message.id)
                     return await message.reply_text("⚠️ **This link has already been used.**")
 
-                # Mark Token as Verified
+                # Mark Token as Verified in DB
                 await db.update_verify_id_info(user_id, verify_id, {"verified": True})
 
-                # Update verification dates according to status
-                ist_tz = pytz.timezone('Asia/Kolkata')
-                now = datetime.datetime.now(tz=ist_tz)
-
+                # Update verification level based on current status
                 is_v1 = await db.is_user_verified(user_id)
                 is_v2 = await db.user_verified(user_id)
+                is_second_shortener = await db.use_second_shortener(user_id, config.TWO_VERIFY_GAP)
+                is_third_shortener = await db.use_third_shortener(user_id, config.THREE_VERIFY_GAP)
 
                 if not is_v1:
-                    await db.update_notcopy_user(user_id, {"last_verified": now})
+                    await db.update_verify_status(user_id, 1)
                     await message.reply_text("✅ **1st Verification Successful!**")
-                elif not is_v2:
-                    await db.update_notcopy_user(user_id, {"second_time_verified": now})
+                elif is_second_shortener or not is_v2:
+                    await db.update_verify_status(user_id, 2)
                     await message.reply_text("✅ **2nd Verification Successful!**")
-                else:
-                    await db.update_notcopy_user(user_id, {"third_time_verified": now})
+                elif is_third_shortener:
+                    await db.update_verify_status(user_id, 3)
                     await message.reply_text("✅ **3rd Verification Successful!**")
+                else:
+                    await db.update_verify_status(user_id, 1)
+                    await message.reply_text("✅ **Verification Successful!**")
 
-                # Send File After Verification
+                # Fetch and Send File After Verification
                 file_data = await db.get_file(file_db_id)
                 if file_data:
                     await send_file_with_fallback(client, message.chat.id, file_data, message.id)
+                else:
+                    await message.reply_text("❌ File not found in database.")
                 return
 
             except Exception as e:
+                print(f"Error in verification handler: {e}")
                 return await message.reply_text("❌ Verification Failed. Unexpected Error.")
 
         # ---------------- FILE ACCESS WITH VERIFICATION CHECK ---------------- #
@@ -114,7 +127,7 @@ async def start_command(client, message):
                 is_subbed = True
                 try:
                     await client.get_chat_member(config.UPDATE_CHANNEL, user_id)
-                except:
+                except Exception:
                     is_subbed = False
 
                 if not is_subbed:
@@ -165,8 +178,11 @@ async def start_command(client, message):
                             quote=True
                         )
                         await asyncio.sleep(300)
-                        await n.delete()
-                        await message.delete()
+                        try:
+                            await n.delete()
+                            await message.delete()
+                        except Exception:
+                            pass
                         return
 
                 except Exception as e:
@@ -264,7 +280,7 @@ async def callback_handler(client, query: CallbackQuery):
         if config.AUTH_CHANNEL_FORCE:
             try:
                 await client.get_chat_member(config.UPDATE_CHANNEL, user_id)
-            except:
+            except Exception:
                 is_subbed = False
 
         if not is_subbed:
@@ -289,7 +305,7 @@ async def callback_handler(client, query: CallbackQuery):
         try:
             await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=""), reply_markup=None)
             await asyncio.sleep(0.1)
-        except:
+        except Exception:
             pass
 
     if data == "home":
@@ -394,7 +410,7 @@ async def callback_handler(client, query: CallbackQuery):
     elif data == "help_stats":
         try:
             await query.message.edit_caption("⏳ **Calculating data...**")
-        except:
+        except Exception:
             pass
 
         def get_size(bytes_val, suffix="B"):
@@ -498,7 +514,7 @@ async def callback_handler(client, query: CallbackQuery):
         try:
             await query.message.delete()
             await query.message.reply_to_message.delete()
-        except:
+        except Exception:
             pass
 
     elif data == "noop":
