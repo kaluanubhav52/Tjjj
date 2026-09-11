@@ -42,7 +42,8 @@ class Database:
             "_id": user_id,
             "last_verified": default_date,
             "second_time_verified": default_date,
-            "third_time_verified": default_date
+            "third_time_verified": default_date,
+            "is_premium": False
         }
 
     async def add_user(self, user_id, first_name):
@@ -71,62 +72,52 @@ class Database:
     async def get_all_users(self):
         return self.users.find({})
 
-    # ---------------- GROUP MANAGEMENT ---------------- #
+    async def has_premium_access(self, user_id: int):
+        """Checks if user has premium access"""
+        user = await self.get_notcopy_user(user_id)
+        if not user: 
+            return False
+        return user.get("is_premium", False)
 
-    async def add_group(self, chat_id, title):
-        if self.groups is None: return False
-        group = await self.groups.find_one({'_id': chat_id})
-        if not group:
-            await self.groups.insert_one({'_id': chat_id, 'title': title})
-            return True
-        return False
+    # ---------------- SETTINGS MANAGEMENT ---------------- #
 
-    async def get_all_groups(self):
-        return self.groups.find({})
+    async def get_settings(self, chat_id):
+        """Fetches settings for group/private chat or returns defaults"""
+        default_settings = {
+            'results_per_page': 10,
+            'display_mode': 'inline',
+            'search_trigger': 'all',
+            'show_image': True
+        }
+        if self.settings is None:
+            return default_settings
+        settings = await self.settings.find_one({'_id': chat_id})
+        if not settings:
+            return default_settings
+        return settings
 
-    # ---------------- FILE MANAGEMENT ---------------- #
+    async def update_settings(self, chat_id, key, value):
+        if self.settings is None: return
+        await self.settings.update_one({'_id': chat_id}, {'$set': {key: value}}, upsert=True)
 
-    async def save_file(self, file_data):
-        if self.files is None: return "error"
-        exist = await self.files.find_one({'file_unique_id': file_data['file_unique_id']})
-        if exist:
-            return "duplicate"
-        await self.files.insert_one(file_data)
-        return "saved"
+    # ---------------- VERIFICATION TIME UPDATER ---------------- #
 
-    async def get_file(self, _id):
-        if self.files is None: return None
-        try:
-            return await self.files.find_one({'_id': ObjectId(_id)})
-        except Exception:
-            try:
-                return await self.files.find_one({'_id': str(_id)})
-            except Exception:
-                return None
-
-    async def search_files(self, query):
-        if self.files is None: return []
-        clean_query = re.sub(r'[._\-]', ' ', query)
-        words = clean_query.split()
+    async def update_verify_status(self, user_id: int, verify_level: int = 1):
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        now_date = datetime.datetime.now(tz=ist_tz)
         
-        regex_list = [re.compile(re.escape(w), re.IGNORECASE) for w in words]
-        cursor = self.files.find({"file_name": {"$all": regex_list}}).sort("_id", -1)
-        return await cursor.to_list(length=1000)
+        field_map = {
+            1: "last_verified",
+            2: "second_time_verified",
+            3: "third_time_verified"
+        }
+        
+        field_name = field_map.get(verify_level, "last_verified")
+        await self.update_notcopy_user(user_id, {field_name: now_date})
 
-    async def get_all_file_names(self):
-        if self.files is None: return []
-        try:
-            cursor = self.files.find({}, {"file_name": 1, "_id": 0}).sort("_id", -1).limit(1500)
-            results = await cursor.to_list(length=1500)
-            return [doc["file_name"] for doc in results if "file_name" in doc]
-        except Exception as e:
-            print(f"Error fetching file names: {e}")
-            return []
-
-    # ---------------- 3-LEVEL VERIFICATION SYSTEM (12 TO 12 MIDNIGHT IST) ---------------- #
+    # ---------------- 3-LEVEL VERIFICATION CHECK ---------------- #
 
     async def is_user_verified(self, user_id):
-        """1st Verification Status (Resets daily at 12:00 AM IST)"""
         user = await self.get_notcopy_user(user_id)
         past_date = user.get("last_verified")
         
@@ -142,7 +133,6 @@ class Database:
         return past_date >= today_midnight
 
     async def user_verified(self, user_id):
-        """2nd Verification Status (Resets daily at 12:00 AM IST)"""
         user = await self.get_notcopy_user(user_id)
         past_date = user.get("second_time_verified")
 
@@ -158,7 +148,6 @@ class Database:
         return past_date >= today_midnight
 
     async def use_second_shortener(self, user_id, time_gap):
-        """Check if 2nd verification is due based on time gap"""
         user = await self.get_notcopy_user(user_id)
         ist_tz = pytz.timezone('Asia/Kolkata')
 
@@ -188,7 +177,6 @@ class Database:
         return False
 
     async def use_third_shortener(self, user_id, time_gap):
-        """Check if 3rd verification is due based on time gap"""
         user = await self.get_notcopy_user(user_id)
         ist_tz = pytz.timezone('Asia/Kolkata')
 
@@ -232,99 +220,56 @@ class Database:
         if self.verify_id is None: return None
         return await self.verify_id.update_one({"user_id": user_id, "hash": hash}, {"$set": value})
 
-    async def has_premium_access(self, user_id: int):
-        user = await self.get_notcopy_user(user_id)
-        if not user: return False
-        return user.get("is_premium", False)
+    # ---------------- OTHER DATABASE METHODS ---------------- #
 
-    # ---------------- SETTINGS & SYSTEM UTILS ---------------- #
+    async def add_group(self, chat_id, title):
+        if self.groups is None: return False
+        group = await self.groups.find_one({'_id': chat_id})
+        if not group:
+            await self.groups.insert_one({'_id': chat_id, 'title': title})
+            return True
+        return False
 
-    async def get_settings(self, chat_id):
-        if self.settings is None:
-            return {'results_per_page': 10, 'display_mode': 'inline', 'search_trigger': 'all', 'show_image': True}
-        settings = await self.settings.find_one({'_id': chat_id})
-        if not settings:
-            return {'results_per_page': 10, 'display_mode': 'inline', 'search_trigger': 'all', 'show_image': True}
-        return settings
+    async def get_all_groups(self):
+        return self.groups.find({})
 
-    async def update_settings(self, chat_id, key, value):
-        if self.settings is None: return
-        await self.settings.update_one({'_id': chat_id}, {'$set': {key: value}}, upsert=True)
+    async def save_file(self, file_data):
+        if self.files is None: return "error"
+        exist = await self.files.find_one({'file_unique_id': file_data['file_unique_id']})
+        if exist: return "duplicate"
+        await self.files.insert_one(file_data)
+        return "saved"
 
-    async def add_watched_channel(self, chat_id):
-        if self.watched is None: return
-        await self.watched.update_one({'_id': chat_id}, {'$set': {'_id': chat_id}}, upsert=True)
+    async def get_file(self, _id):
+        if self.files is None: return None
+        try:
+            return await self.files.find_one({'_id': ObjectId(_id)})
+        except Exception:
+            try:
+                return await self.files.find_one({'_id': str(_id)})
+            except Exception:
+                return None
 
-    async def remove_watched_channel(self, chat_id):
-        if self.watched is None: return
-        await self.watched.delete_one({'_id': chat_id})
+    async def search_files(self, query):
+        if self.files is None: return []
+        clean_query = re.sub(r'[._\-]', ' ', query)
+        words = clean_query.split()
+        regex_list = [re.compile(re.escape(w), re.IGNORECASE) for w in words]
+        cursor = self.files.find({"file_name": {"$all": regex_list}}).sort("_id", -1)
+        return await cursor.to_list(length=1000)
 
-    async def get_watched_channels(self):
-        if self.watched is None: return []
-        channels = await self.watched.find({}).to_list(length=1000)
-        return [c['_id'] for c in channels]
-
-    async def delete_all_files(self):
-        if self.files is None: return 0
-        result = await self.files.delete_many({})
-        return result.deleted_count
-
-    async def delete_all_users(self):
-        if self.users is None: return 0
-        result = await self.users.delete_many({})
-        return result.deleted_count
-
-    async def delete_all_groups(self):
-        if self.groups is None: return 0
-        result = await self.groups.delete_many({})
-        return result.deleted_count
-
-    async def delete_file_by_unique_id(self, unique_id):
-        if self.files is None: return
-        await self.files.delete_one({'file_unique_id': unique_id})
-
-    async def delete_files_by_chat_id(self, chat_id):
-        if self.files is None: return 0
-        result = await self.files.delete_many({'chat_id': chat_id})
-        return result.deleted_count
-
-    # ---------------- BAN SYSTEM ---------------- #
-
-    async def ban_user(self, user_id, reason="No reason specified"):
-        if self.banned is None: return
-        await self.banned.update_one(
-            {'_id': user_id}, 
-            {'$set': {'_id': user_id, 'reason': reason}}, 
-            upsert=True
-        )
-
-    async def unban_user(self, user_id):
-        if self.banned is None: return
-        await self.banned.delete_one({'_id': user_id})
-
-    async def get_ban_status(self, user_id):
-        if self.banned is None: return None
-        return await self.banned.find_one({'_id': user_id})
-
-    async def ban_chat(self, chat_id, reason="No reason specified"):
-        if self.banned_chats is None: return
-        await self.banned_chats.update_one(
-            {'_id': chat_id}, 
-            {'$set': {'_id': chat_id, 'reason': reason}}, 
-            upsert=True
-        )
-
-    async def unban_chat(self, chat_id):
-        if self.banned_chats is None: return
-        await self.banned_chats.delete_one({'_id': chat_id})
-
-    async def get_chat_ban_status(self, chat_id):
-        if self.banned_chats is None: return None
-        return await self.banned_chats.find_one({'_id': chat_id})
+    async def get_all_file_names(self):
+        if self.files is None: return []
+        try:
+            cursor = self.files.find({}, {"file_name": 1, "_id": 0}).sort("_id", -1).limit(1500)
+            results = await cursor.to_list(length=1500)
+            return [doc["file_name"] for doc in results if "file_name" in doc]
+        except Exception:
+            return []
 
 db = Database()
 
-# Improved Shortlink API Function (Handles all website API formats)
+# Shortlink API Generator
 async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_shortener=False):
     if is_third_shortener:
         api = config.SHORTENER_API3
@@ -339,7 +284,6 @@ async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_sh
     if not api or not site:
         return url
 
-    # Dynamic URL formatting to clear trailing slashes & protocol prefixes
     site = site.replace("https://", "").replace("http://", "").strip("/")
     api_url = f"https://{site}/api?api={api}&url={url}"
 
@@ -347,17 +291,11 @@ async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_sh
         async with aiohttp.ClientSession() as session:
             async with session.get(api_url, timeout=10) as response:
                 data = await response.json()
-                
-                # Dynamic key checking to ensure short URL is generated correctly
-                if "shorturl" in data:
-                    return data["shorturl"]
-                elif "url" in data:
-                    return data["url"]
-                elif "link" in data:
-                    return data["link"]
-                elif "shortenedUrl" in data:
-                    return data["shortenedUrl"]
+                if "shorturl" in data: return data["shorturl"]
+                elif "url" in data: return data["url"]
+                elif "link" in data: return data["link"]
+                elif "shortenedUrl" in data: return data["shortenedUrl"]
                 return url
     except Exception as e:
-        print(f"Shortener Error ({site}): {e}")
+        print(f"Shortener Error: {e}")
         return url
