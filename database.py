@@ -324,7 +324,7 @@ class Database:
 
 db = Database()
 
-# Helper Function: Shortlink API Request
+# Improved Shortlink API Function (Handles all website API formats)
 async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_shortener=False):
     if is_third_shortener:
         api = config.SHORTENER_API3
@@ -339,14 +339,25 @@ async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_sh
     if not api or not site:
         return url
 
+    # Dynamic URL formatting to clear trailing slashes & protocol prefixes
+    site = site.replace("https://", "").replace("http://", "").strip("/")
+    api_url = f"https://{site}/api?api={api}&url={url}"
+
     try:
         async with aiohttp.ClientSession() as session:
-            params = {'api': api, 'url': url}
-            async with session.get(f"https://{site}/api", params=params, timeout=10) as response:
+            async with session.get(api_url, timeout=10) as response:
                 data = await response.json()
-                if data.get("status") == "success" or data.get("status") == 200:
+                
+                # Dynamic key checking to ensure short URL is generated correctly
+                if "shorturl" in data:
                     return data["shorturl"]
-                return data.get("url", url)
+                elif "url" in data:
+                    return data["url"]
+                elif "link" in data:
+                    return data["link"]
+                elif "shortenedUrl" in data:
+                    return data["shortenedUrl"]
+                return url
     except Exception as e:
-        print(f"Shortener API Error: {e}")
+        print(f"Shortener Error ({site}): {e}")
         return url
