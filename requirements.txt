@@ -22,6 +22,7 @@ TgCrypto
 urllib3
 yt-dlp
 pytz
+aiohttp
 
 thefuzz==0.22.1
 python-Levenshtein==0.25.1
