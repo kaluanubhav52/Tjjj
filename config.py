@@ -39,17 +39,17 @@ TUTORIAL_2 = os.environ.get("TUTORIAL_2", "https://t.me/dreamxbotz")
 TUTORIAL_3 = os.environ.get("TUTORIAL_3", "https://t.me/dreamxbotz")
 
 # Shortener 1 Details
-SHORTENER_WEBSITE = os.environ.get("SHORTENER_WEBSITE", "")
-SHORTENER_API = os.environ.get("SHORTENER_API", "")
+SHORTENER_WEBSITE = os.environ.get("SHORTENER_WEBSITE", "arolinks.com")
+SHORTENER_API = os.environ.get("SHORTENER_API", "d9e2ed76f4f30e39ccefc3455e5a8811a33cbe2f")
 
 # Shortener 2 Details
-SHORTENER_WEBSITE2 = os.environ.get("SHORTENER_WEBSITE2", "")
-SHORTENER_API2 = os.environ.get("SHORTENER_API2", "")
+SHORTENER_WEBSITE2 = os.environ.get("SHORTENER_WEBSITE2", "arolinks.com")
+SHORTENER_API2 = os.environ.get("SHORTENER_API2", "d9e2ed76f4f30e39ccefc3455e5a8811a33cbe2f")
 TWO_VERIFY_GAP = int(os.environ.get("TWO_VERIFY_GAP", "1200"))  # Default: 20 mins gap
 
 # Shortener 3 Details
-SHORTENER_WEBSITE3 = os.environ.get("SHORTENER_WEBSITE3", "")
-SHORTENER_API3 = os.environ.get("SHORTENER_API3", "")
+SHORTENER_WEBSITE3 = os.environ.get("SHORTENER_WEBSITE3", "arolinks.com")
+SHORTENER_API3 = os.environ.get("SHORTENER_API3", "d9e2ed76f4f30e39ccefc3455e5a8811a33cbe2f")
 THREE_VERIFY_GAP = int(os.environ.get("THREE_VERIFY_GAP", "54000")) # Default: 15 hours gap
 
 # Message Scripts
