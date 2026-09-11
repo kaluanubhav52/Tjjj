@@ -1,8 +1,12 @@
 import asyncio
+import random
+import string
+import pytz
+import datetime
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
-from config import UPDATE_CHANNEL, REQUEST_GROUP, PHOTO_URL, ADMINS, LOG_CHANNEL, AUTH_CHANNEL_FORCE
-from database import db
+import config
+from database import db, get_shortlink
 from .utils import get_readable_size
 
 # ------------------------------------------------------------ #
@@ -55,31 +59,120 @@ async def send_file_with_fallback(client, chat_id, file_data, reply_to_id=None):
 async def start_command(client, message):
     if message.chat.type == enums.ChatType.PRIVATE:
         user_id = message.from_user.id
+        param = message.command[1] if len(message.command) > 1 else ""
 
-        # Handle direct file sharing via start parameter
-        if len(message.command) > 1:
-            file_db_id = message.command[1]
+        # ---------------- TOKEN VERIFICATION RETURN HANDLER ---------------- #
+        if param.startswith("notcopy_") or param.startswith("sendall_"):
+            try:
+                _, u_id, verify_id, file_db_id = param.split("_", 3)
+                
+                if int(u_id) != user_id:
+                    return await message.reply_text("❌ Invalid link ownership.")
 
-            # Channel subscription check
-            should_check = AUTH_CHANNEL_FORCE
-            is_subbed = True
-            if should_check:
+                verify_info = await db.get_verify_id_info(user_id, verify_id)
+                if not verify_info:
+                    return await message.reply_text("❌ **Invalid or Expired Link!** Please try again.")
+
+                if verify_info.get("verified"):
+                    return await message.reply_text("⚠️ **This link has already been used.**")
+
+                # Mark Token as Verified
+                await db.update_verify_id_info(user_id, verify_id, {"verified": True})
+
+                # Update verification dates according to status
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                now = datetime.datetime.now(tz=ist_tz)
+
+                is_v1 = await db.is_user_verified(user_id)
+                is_v2 = await db.user_verified(user_id)
+
+                if not is_v1:
+                    await db.update_notcopy_user(user_id, {"last_verified": now})
+                    await message.reply_text("✅ **1st Verification Successful!**")
+                elif not is_v2:
+                    await db.update_notcopy_user(user_id, {"second_time_verified": now})
+                    await message.reply_text("✅ **2nd Verification Successful!**")
+                else:
+                    await db.update_notcopy_user(user_id, {"third_time_verified": now})
+                    await message.reply_text("✅ **3rd Verification Successful!**")
+
+                # Send File After Verification
+                file_data = await db.get_file(file_db_id)
+                if file_data:
+                    await send_file_with_fallback(client, message.chat.id, file_data, message.id)
+                return
+
+            except Exception as e:
+                return await message.reply_text("❌ Verification Failed. Unexpected Error.")
+
+        # ---------------- FILE ACCESS WITH VERIFICATION CHECK ---------------- #
+        if param:
+            file_db_id = param
+
+            # Force Subscription Check
+            if config.AUTH_CHANNEL_FORCE:
+                is_subbed = True
                 try:
-                    await client.get_chat_member(UPDATE_CHANNEL, user_id)
+                    await client.get_chat_member(config.UPDATE_CHANNEL, user_id)
                 except:
                     is_subbed = False
 
-            if not is_subbed:
-                btn = [
-                    [InlineKeyboardButton('📣 Join Channel', url=f'https://t.me/{UPDATE_CHANNEL}')],
-                    [InlineKeyboardButton('↻ Try Again', callback_data=f"checksub_{file_db_id}")]
-                ]
-                return await message.reply_text(
-                    "**To use this bot you must subscribe to its update channel! 🫰**",
-                    reply_markup=InlineKeyboardMarkup(btn),
-                    quote=True
-                )
+                if not is_subbed:
+                    btn = [
+                        [InlineKeyboardButton('📣 Join Channel', url=f'https://t.me/{config.UPDATE_CHANNEL}')],
+                        [InlineKeyboardButton('↻ Try Again', callback_data=f"checksub_{file_db_id}")]
+                    ]
+                    return await message.reply_text(
+                        "**To use this bot you must subscribe to its update channel! 🫰**",
+                        reply_markup=InlineKeyboardMarkup(btn),
+                        quote=True
+                    )
 
+            # Verification Gateway Check
+            if config.IS_VERIFY and not await db.has_premium_access(user_id):
+                try:
+                    user_verified = await db.is_user_verified(user_id)
+                    is_second_shortener = await db.use_second_shortener(user_id, config.TWO_VERIFY_GAP)
+                    is_third_shortener = await db.use_third_shortener(user_id, config.THREE_VERIFY_GAP)
+
+                    if not user_verified or is_second_shortener or is_third_shortener:
+                        verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
+                        await db.create_verify_id(user_id, verify_id)
+
+                        deep_link = f"https://telegram.me/{client.me.username}?start=notcopy_{user_id}_{verify_id}_{file_db_id}"
+                        verify_url = await get_shortlink(deep_link, grp_id=None, is_second_shortener=is_second_shortener, is_third_shortener=is_third_shortener)
+
+                        if is_third_shortener:
+                            howtodownload = config.TUTORIAL_3
+                        else:
+                            howtodownload = config.TUTORIAL_2 if is_second_shortener else config.TUTORIAL
+
+                        buttons = [
+                            [InlineKeyboardButton(text="♻️ ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ᴠᴇʀɪꜰʏ ♻️", url=verify_url)],
+                            [InlineKeyboardButton(text="⁉️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ ⁉️", url=howtodownload)]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(buttons)
+
+                        if await db.user_verified(user_id):
+                            msg_text = config.THIRDT_VERIFICATION_TEXT
+                        else:
+                            msg_text = config.SECOND_VERIFICATION_TEXT if is_second_shortener else config.VERIFICATION_TEXT
+
+                        n = await message.reply_text(
+                            text=msg_text.format(message.from_user.mention),
+                            reply_markup=reply_markup,
+                            parse_mode=enums.ParseMode.HTML,
+                            quote=True
+                        )
+                        await asyncio.sleep(300)
+                        await n.delete()
+                        await message.delete()
+                        return
+
+                except Exception as e:
+                    print(f"Error In Verification: {e}")
+
+            # Send file directly if already verified
             file_data = await db.get_file(file_db_id)
             if file_data:
                 success = await send_file_with_fallback(client, message.chat.id, file_data, message.id)
@@ -87,7 +180,7 @@ async def start_command(client, message):
                     await message.reply("❌ The file was deleted or inaccessible.", quote=True)
             return
 
-        # Normal start animation and home message
+        # Normal Start Message
         bot_name = client.me.first_name
         bot_username = client.me.username
         bot_mention = f"[{bot_name}](https://t.me/{bot_username})"
@@ -135,8 +228,8 @@ async def send_home_message(client, message, user=None, is_edit=False):
 
     buttons = [
         [InlineKeyboardButton("🔍 Online Search 🔎", switch_inline_query_current_chat="", style=enums.ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton('✇ Group ✇', url=REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS),
-         InlineKeyboardButton('✇ Updates ✇', url=f'https://t.me/{UPDATE_CHANNEL}', style=enums.ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton('✇ Group ✇', url=config.REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS),
+         InlineKeyboardButton('✇ Updates ✇', url=f'https://t.me/{config.UPDATE_CHANNEL}', style=enums.ButtonStyle.SUCCESS)],
         [InlineKeyboardButton('〄 Help 〄', callback_data='help', style=enums.ButtonStyle.PRIMARY),
          InlineKeyboardButton('⍟ About ⍟', callback_data='about', style=enums.ButtonStyle.PRIMARY)],
         [InlineKeyboardButton('⇋ Add to Group ⇋', url=f"http://t.me/{client.me.username}?startgroup&admin=delete_messages", style=enums.ButtonStyle.SUCCESS)]
@@ -152,9 +245,9 @@ async def send_home_message(client, message, user=None, is_edit=False):
     )
 
     if is_edit:
-        await message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(buttons))
+        await message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await message.reply_photo(PHOTO_URL, caption=txt, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+        await message.reply_photo(config.PHOTO_URL, caption=txt, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
 # ------------------------------------------------------------ #
 #                        CALLBACK HANDLER                       #
@@ -164,15 +257,13 @@ async def callback_handler(client, query: CallbackQuery):
     data = query.data
     user_id = query.from_user.id
 
-    # Handle subscription check for files
     if data.startswith("checksub_"):
         file_db_id = data.split("_")[1]
-        should_check = AUTH_CHANNEL_FORCE
         is_subbed = True
 
-        if should_check:
+        if config.AUTH_CHANNEL_FORCE:
             try:
-                await client.get_chat_member(UPDATE_CHANNEL, user_id)
+                await client.get_chat_member(config.UPDATE_CHANNEL, user_id)
             except:
                 is_subbed = False
 
@@ -191,19 +282,16 @@ async def callback_handler(client, query: CallbackQuery):
             await query.answer("❌ File not found in database.", show_alert=True)
         return
 
-    # Admin-only protection
-    if data == "help_admin" and user_id not in ADMINS:
+    if data == "help_admin" and user_id not in config.ADMINS:
         return await query.answer("⛔ Admins only.", show_alert=True)
 
-    # Clear media on non-critical callbacks
     if data not in ["closea", "noop", "help_stats"]:
         try:
-            await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=""), reply_markup=None)
+            await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=""), reply_markup=None)
             await asyncio.sleep(0.1)
         except:
             pass
 
-    # -------------------- MENU NAVIGATION --------------------
     if data == "home":
         await send_home_message(client, query.message, user=query.from_user, is_edit=True)
 
@@ -220,15 +308,14 @@ async def callback_handler(client, query: CallbackQuery):
              InlineKeyboardButton('🆕 Video Tools', callback_data='help_exthumb', style=enums.ButtonStyle.PRIMARY)],
             [InlineKeyboardButton('🏠 Home 🏠', callback_data='home', style=enums.ButtonStyle.DANGER)],
         ]
-        if user_id in ADMINS:
+        if user_id in config.ADMINS:
             btns.insert(0, [InlineKeyboardButton('👮‍♂️ Admin Commands 👮‍♂️', callback_data='help_admin', style=enums.ButtonStyle.DANGER)])
 
         await query.message.edit_media(
-            InputMediaPhoto(PHOTO_URL, caption=f"<b>Hey {user_mention},\nHere you can get help for all my commands.</b>"),
+            InputMediaPhoto(config.PHOTO_URL, caption=f"<b>Hey {user_mention},\nHere you can get help for all my commands.</b>"),
             reply_markup=InlineKeyboardMarkup(btns)
         )
 
-    # -------------------- EXTRA TOOLS --------------------
     elif data == "help_extra":
         txt = (
             "<b><u>Extra Tools:</u></b>\n\n"
@@ -250,9 +337,8 @@ async def callback_handler(client, query: CallbackQuery):
             "<blockquote>• <code>/written</code> [file name] - Converts the text into a text file.</blockquote>"
         )
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- ADMIN COMMANDS --------------------
     elif data == "help_admin":
         txt = (
             "<b><u>Admin Control Panel:</u></b>\n\n"
@@ -273,9 +359,8 @@ async def callback_handler(client, query: CallbackQuery):
             "• <code>/restart</code> - Restart the bot.</blockquote>"
         )
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- USER GUIDE --------------------
     elif data == "help_guide":
         txt = (
             "<blockquote>"
@@ -291,24 +376,21 @@ async def callback_handler(client, query: CallbackQuery):
             "</blockquote>"
         )
         btn = [
-            [InlineKeyboardButton('Go to Group 💬', url=REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton('Go to Group 💬', url=config.REQUEST_GROUP, style=enums.ButtonStyle.SUCCESS)],
             [InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]
         ]
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
 
-    # -------------------- COPYRIGHT --------------------
     elif data == "help_copyright":
         txt = "<b>© Copyright</b>\n\nFiles are collected automatically from Telegram. We do not upload content ourselves."
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- GROUP SETTINGS --------------------
     elif data == "help_settings":
         txt = "<b>⚙️ Group Settings</b>\n\nSend <code>/settings</code> in the group to set:\n• Display mode (buttons/text)\n• Search trigger (!)\n• Number of results"
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- STATISTICS --------------------
     elif data == "help_stats":
         try:
             await query.message.edit_caption("⏳ **Calculating data...**")
@@ -357,9 +439,8 @@ async def callback_handler(client, query: CallbackQuery):
             [InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY),
              InlineKeyboardButton('↻ Refresh', callback_data='help_stats', style=enums.ButtonStyle.SUCCESS)]
         ])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=refresh_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=refresh_btn)
 
-    # -------------------- ABOUT --------------------
     elif data == "about":
         bot_name = client.me.first_name
         bot_username = client.me.username
@@ -369,7 +450,7 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>║╭━━━━━━━━━━━━━━━➣</b>\n"
             f"<b>║┣⪼ 🤖 Bot : {bot_mention}</b>\n"
             "<b>║┣⪼ 👦 Creator : @TJ_Bots_Admin</b>\n"
-            f"<b>║┣⪼ 🤖 Update : <a href='https://t.me/{UPDATE_CHANNEL}'>Update Channel</a></b>\n"
+            f"<b>║┣⪼ 🤖 Update : <a href='https://t.me/{config.UPDATE_CHANNEL}'>Update Channel</a></b>\n"
             "<b>║┣⪼ 🗣️ Language : [Python](https://www.python.org/)</b>\n"
             "<b>║┣⪼ 📚 Library : [Pyrogram](https://docs.pyrogram.org/)</b>\n"
             f"<b>║┣⪼ &lt;/&gt; Source : <a href='https://github.com/Tj-Bots/Auto-Filter'>GitHub</a></b>\n"
@@ -381,9 +462,8 @@ async def callback_handler(client, query: CallbackQuery):
             [InlineKeyboardButton('← Back', callback_data='home', style=enums.ButtonStyle.PRIMARY),
              InlineKeyboardButton('✘ Close', callback_data='closea', style=enums.ButtonStyle.DANGER)]
         ]
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=InlineKeyboardMarkup(btn))
 
-    # -------------------- TIKTOK HELP --------------------
     elif data == "help_d":
         txt = (
             "📥 <b><u>TikTok Downloader:</u></b>\n\n"
@@ -391,9 +471,8 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>◉ How to use:</b>\n<blockquote>Send the command with a link or reply to a link.</blockquote>"
         )
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- TELEGRAPH HELP --------------------
     elif data == "help_telegraph":
         txt = (
             "📤 <b><u>Upload Images to i.ibb.co</u></b> 🖼️\n\n"
@@ -401,9 +480,8 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>◉ How to use:</b>\n<blockquote>Reply to an image with the command.</blockquote>"
         )
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- VIDEO TOOLS HELP --------------------
     elif data == "help_exthumb":
         txt = (
             "🔧 <b><i>Video Tools:</i></b>\n\n"
@@ -414,9 +492,8 @@ async def callback_handler(client, query: CallbackQuery):
             "<b>How to use:</b>\n<blockquote>Reply to a video/file with the command.</blockquote>"
         )
         back_btn = InlineKeyboardMarkup([[InlineKeyboardButton('← Back', callback_data='help', style=enums.ButtonStyle.PRIMARY)]])
-        await query.message.edit_media(InputMediaPhoto(PHOTO_URL, caption=txt), reply_markup=back_btn)
+        await query.message.edit_media(InputMediaPhoto(config.PHOTO_URL, caption=txt), reply_markup=back_btn)
 
-    # -------------------- CLOSE / NOOP --------------------
     elif data == "closea":
         try:
             await query.message.delete()
