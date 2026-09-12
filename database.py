@@ -43,6 +43,7 @@ class Database:
             "last_verified": default_date,
             "second_time_verified": default_date,
             "third_time_verified": default_date,
+            "verify_level": 0,
             "is_premium": False
         }
 
@@ -73,137 +74,84 @@ class Database:
         return self.users.find({})
 
     async def has_premium_access(self, user_id: int):
-        """Checks if user has premium access"""
         user = await self.get_notcopy_user(user_id)
-        if not user: 
-            return False
+        if not user: return False
         return user.get("is_premium", False)
 
-    # ---------------- SETTINGS MANAGEMENT ---------------- #
+    # ---------------- ADVANCE 3-LEVEL VERIFICATION SYSTEM ---------------- #
 
-    async def get_settings(self, chat_id):
-        """Fetches settings for group/private chat or returns defaults"""
-        default_settings = {
-            'results_per_page': 10,
-            'display_mode': 'inline',
-            'search_trigger': 'all',
-            'show_image': True
-        }
-        if self.settings is None:
-            return default_settings
-        settings = await self.settings.find_one({'_id': chat_id})
-        if not settings:
-            return default_settings
-        return settings
+    def _parse_ist_datetime(self, date_val):
+        """Converts naive or aware UTC/MongoDB timestamps to timezone-aware IST datetime"""
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        default_date = datetime.datetime(2019, 5, 17, 0, 0, 0, tzinfo=ist_tz)
+        
+        if not date_val:
+            return default_date
+            
+        if date_val.tzinfo is None:
+            return ist_tz.localize(date_val)
+        return date_val.astimezone(ist_tz)
 
-    async def update_settings(self, chat_id, key, value):
-        if self.settings is None: return
-        await self.settings.update_one({'_id': chat_id}, {'$set': {key: value}}, upsert=True)
-
-    # ---------------- VERIFICATION TIME UPDATER ---------------- #
-
-    async def update_verify_status(self, user_id: int, verify_level: int = 1):
+    async def update_verify_status(self, user_id: int, verify_level: int):
+        """Updates timestamp and exact level achieved by user"""
         ist_tz = pytz.timezone('Asia/Kolkata')
         now_date = datetime.datetime.now(tz=ist_tz)
-        
-        field_map = {
-            1: "last_verified",
-            2: "second_time_verified",
-            3: "third_time_verified"
-        }
-        
-        field_name = field_map.get(verify_level, "last_verified")
-        await self.update_notcopy_user(user_id, {field_name: now_date})
 
-    # ---------------- 3-LEVEL VERIFICATION CHECK ---------------- #
+        update_payload = {"verify_level": verify_level}
 
-    async def is_user_verified(self, user_id):
+        if verify_level == 1:
+            update_payload["last_verified"] = now_date
+        elif verify_level == 2:
+            update_payload["second_time_verified"] = now_date
+        elif verify_level == 3:
+            update_payload["third_time_verified"] = now_date
+
+        await self.update_notcopy_user(user_id, update_payload)
+
+    async def check_user_verification_needed(self, user_id: int):
+        """
+        Determines verification status and required level accurately.
+        Returns: (needs_verification: bool, required_level: int)
+        """
         user = await self.get_notcopy_user(user_id)
-        past_date = user.get("last_verified")
-        
-        ist_tz = pytz.timezone('Asia/Kolkata')
-        if not past_date or past_date.tzinfo is None:
-            past_date = ist_tz.localize(past_date) if past_date else datetime.datetime(2019, 5, 17, 0, 0, 0, tzinfo=ist_tz)
-        else:
-            past_date = past_date.astimezone(ist_tz)
-            
-        current_time = datetime.datetime.now(tz=ist_tz)
-        today_midnight = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        return past_date >= today_midnight
-
-    async def user_verified(self, user_id):
-        user = await self.get_notcopy_user(user_id)
-        past_date = user.get("second_time_verified")
+        if not user:
+            return True, 1
 
         ist_tz = pytz.timezone('Asia/Kolkata')
-        if not past_date or past_date.tzinfo is None:
-            past_date = ist_tz.localize(past_date) if past_date else datetime.datetime(2019, 5, 17, 0, 0, 0, tzinfo=ist_tz)
-        else:
-            past_date = past_date.astimezone(ist_tz)
-            
-        current_time = datetime.datetime.now(tz=ist_tz)
-        today_midnight = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        now_time = datetime.datetime.now(tz=ist_tz)
 
-        return past_date >= today_midnight
+        v_level = user.get("verify_level", 0)
 
-    async def use_second_shortener(self, user_id, time_gap):
-        user = await self.get_notcopy_user(user_id)
-        ist_tz = pytz.timezone('Asia/Kolkata')
+        last_v = self._parse_ist_datetime(user.get("last_verified"))
+        second_v = self._parse_ist_datetime(user.get("second_time_verified"))
+        third_v = self._parse_ist_datetime(user.get("third_time_verified"))
 
-        if not user.get("second_time_verified"):
-            default_date = datetime.datetime(2019, 5, 17, 0, 0, 0, tzinfo=ist_tz)
-            await self.update_notcopy_user(user_id, {"second_time_verified": default_date})
-            user = await self.get_notcopy_user(user_id)
+        # 1st Level: New user or never verified
+        if v_level == 0 or (now_time - last_v).total_seconds() > (86400 * 365):
+            return True, 1
 
-        if await self.is_user_verified(user_id):
-            past_date = user.get("last_verified")
-            if past_date.tzinfo is None:
-                past_date = ist_tz.localize(past_date)
-            else:
-                past_date = past_date.astimezone(ist_tz)
+        # 2nd Level: Level 1 clear ho chuka hai, check TWO_VERIFY_GAP
+        if v_level == 1:
+            time_diff = (now_time - last_v).total_seconds()
+            if time_diff >= config.TWO_VERIFY_GAP:
+                return True, 2
+            return False, 0
 
-            current_time = datetime.datetime.now(tz=ist_tz)
-            time_difference = current_time - past_date
+        # 3rd Level: Level 2 clear ho chuka hai, check THREE_VERIFY_GAP
+        if v_level == 2:
+            time_diff = (now_time - second_v).total_seconds()
+            if time_diff >= config.THREE_VERIFY_GAP:
+                return True, 3
+            return False, 0
 
-            if time_difference > datetime.timedelta(seconds=time_gap):
-                second_time = user.get("second_time_verified")
-                if second_time.tzinfo is None:
-                    second_time = ist_tz.localize(second_time)
-                else:
-                    second_time = second_time.astimezone(ist_tz)
+        # Level 3 Complete: THREE_VERIFY_GAP ke baad restart from Level 2
+        if v_level == 3:
+            time_diff = (now_time - third_v).total_seconds()
+            if time_diff >= config.THREE_VERIFY_GAP:
+                return True, 2
+            return False, 0
 
-                return second_time < past_date
-        return False
-
-    async def use_third_shortener(self, user_id, time_gap):
-        user = await self.get_notcopy_user(user_id)
-        ist_tz = pytz.timezone('Asia/Kolkata')
-
-        if not user.get("third_time_verified"):
-            default_date = datetime.datetime(2018, 5, 17, 0, 0, 0, tzinfo=ist_tz)
-            await self.update_notcopy_user(user_id, {"third_time_verified": default_date})
-            user = await self.get_notcopy_user(user_id)
-
-        if await self.user_verified(user_id):
-            past_date = user.get("second_time_verified")
-            if past_date.tzinfo is None:
-                past_date = ist_tz.localize(past_date)
-            else:
-                past_date = past_date.astimezone(ist_tz)
-
-            current_time = datetime.datetime.now(tz=ist_tz)
-            time_difference = current_time - past_date
-
-            if time_difference > datetime.timedelta(seconds=time_gap):
-                third_time = user.get("third_time_verified")
-                if third_time.tzinfo is None:
-                    third_time = ist_tz.localize(third_time)
-                else:
-                    third_time = third_time.astimezone(ist_tz)
-
-                return third_time < past_date
-        return False
+        return False, 0
 
     # ---------------- VERIFICATION TOKEN HANDLERS ---------------- #
 
@@ -220,23 +168,13 @@ class Database:
         if self.verify_id is None: return None
         return await self.verify_id.update_one({"user_id": user_id, "hash": hash}, {"$set": value})
 
-    # ---------------- OTHER DATABASE METHODS ---------------- #
-
-    async def add_group(self, chat_id, title):
-        if self.groups is None: return False
-        group = await self.groups.find_one({'_id': chat_id})
-        if not group:
-            await self.groups.insert_one({'_id': chat_id, 'title': title})
-            return True
-        return False
-
-    async def get_all_groups(self):
-        return self.groups.find({})
+    # ---------------- FILE MANAGEMENT ---------------- #
 
     async def save_file(self, file_data):
         if self.files is None: return "error"
         exist = await self.files.find_one({'file_unique_id': file_data['file_unique_id']})
-        if exist: return "duplicate"
+        if exist:
+            return "duplicate"
         await self.files.insert_one(file_data)
         return "saved"
 
@@ -254,6 +192,7 @@ class Database:
         if self.files is None: return []
         clean_query = re.sub(r'[._\-]', ' ', query)
         words = clean_query.split()
+        
         regex_list = [re.compile(re.escape(w), re.IGNORECASE) for w in words]
         cursor = self.files.find({"file_name": {"$all": regex_list}}).sort("_id", -1)
         return await cursor.to_list(length=1000)
@@ -264,17 +203,113 @@ class Database:
             cursor = self.files.find({}, {"file_name": 1, "_id": 0}).sort("_id", -1).limit(1500)
             results = await cursor.to_list(length=1500)
             return [doc["file_name"] for doc in results if "file_name" in doc]
-        except Exception:
+        except Exception as e:
+            print(f"Error fetching file names: {e}")
             return []
 
-db = Database()
+    # ---------------- GROUP & SETTINGS MANAGEMENT ---------------- #
 
-# Shortlink API Generator
-async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_shortener=False):
-    if is_third_shortener:
+    async def add_group(self, chat_id, title):
+        if self.groups is None: return False
+        group = await self.groups.find_one({'_id': chat_id})
+        if not group:
+            await self.groups.insert_one({'_id': chat_id, 'title': title})
+            return True
+        return False
+
+    async def get_all_groups(self):
+        return self.groups.find({})
+
+    async def get_settings(self, chat_id):
+        if self.settings is None:
+            return {'results_per_page': 10, 'display_mode': 'inline', 'search_trigger': 'all', 'show_image': True}
+        settings = await self.settings.find_one({'_id': chat_id})
+        if not settings:
+            return {'results_per_page': 10, 'display_mode': 'inline', 'search_trigger': 'all', 'show_image': True}
+        return settings
+
+    async def update_settings(self, chat_id, key, value):
+        if self.settings is None: return
+        await self.settings.update_one({'_id': chat_id}, {'$set': {key: value}}, upsert=True)
+
+    async def add_watched_channel(self, chat_id):
+        if self.watched is None: return
+        await self.watched.update_one({'_id': chat_id}, {'$set': {'_id': chat_id}}, upsert=True)
+
+    async def remove_watched_channel(self, chat_id):
+        if self.watched is None: return
+        await self.watched.delete_one({'_id': chat_id})
+
+    async def get_watched_channels(self):
+        if self.watched is None: return []
+        channels = await self.watched.find({}).to_list(length=1000)
+        return [c['_id'] for c in channels]
+
+    # ---------------- BAN & MAINTENANCE SYSTEM ---------------- #
+
+    async def delete_all_files(self):
+        if self.files is None: return 0
+        result = await self.files.delete_many({})
+        return result.deleted_count
+
+    async def delete_all_users(self):
+        if self.users is None: return 0
+        result = await self.users.delete_many({})
+        return result.deleted_count
+
+    async def delete_all_groups(self):
+        if self.groups is None: return 0
+        result = await self.groups.delete_many({})
+        return result.deleted_count
+
+    async def delete_file_by_unique_id(self, unique_id):
+        if self.files is None: return
+        await self.files.delete_one({'file_unique_id': unique_id})
+
+    async def delete_files_by_chat_id(self, chat_id):
+        if self.files is None: return 0
+        result = await self.files.delete_many({'chat_id': chat_id})
+        return result.deleted_count
+
+    async def ban_user(self, user_id, reason="No reason specified"):
+        if self.banned is None: return
+        await self.banned.update_one(
+            {'_id': user_id}, 
+            {'$set': {'_id': user_id, 'reason': reason}}, 
+            upsert=True
+        )
+
+    async def unban_user(self, user_id):
+        if self.banned is None: return
+        await self.banned.delete_one({'_id': user_id})
+
+    async def get_ban_status(self, user_id):
+        if self.banned is None: return None
+        return await self.banned.find_one({'_id': user_id})
+
+    async def ban_chat(self, chat_id, reason="No reason specified"):
+        if self.banned_chats is None: return
+        await self.banned_chats.update_one(
+            {'_id': chat_id}, 
+            {'$set': {'_id': chat_id, 'reason': reason}}, 
+            upsert=True
+        )
+
+    async def unban_chat(self, chat_id):
+        if self.banned_chats is None: return
+        await self.banned_chats.delete_one({'_id': chat_id})
+
+    async def get_chat_ban_status(self, chat_id):
+        if self.banned_chats is None: return None
+        return await self.banned_chats.find_one({'_id': chat_id})
+
+
+# Dynamic Shortlink Resolver
+async def get_shortlink(url, level=1):
+    if level == 3:
         api = config.SHORTENER_API3
         site = config.SHORTENER_WEBSITE3
-    elif is_second_shortener:
+    elif level == 2:
         api = config.SHORTENER_API2
         site = config.SHORTENER_WEBSITE2
     else:
@@ -297,5 +332,7 @@ async def get_shortlink(url, grp_id=None, is_second_shortener=False, is_third_sh
                 elif "shortenedUrl" in data: return data["shortenedUrl"]
                 return url
     except Exception as e:
-        print(f"Shortener Error: {e}")
+        print(f"Shortener Error ({site}): {e}")
         return url
+
+db = Database()
