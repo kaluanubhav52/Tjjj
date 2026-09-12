@@ -86,12 +86,12 @@ async def start_command(client, message):
                 # Mark Token as Verified in DB
                 await db.update_verify_id_info(user_id, verify_id, {"verified": True})
 
-                # Check dynamic level required and update verified level
-                _, required_level = await db.check_user_verification_needed(user_id)
-                target_level = required_level if required_level > 0 else 1
+                # Fix: Directly fetch current verification requirement instead of incrementing automatically
+                needs_verify, req_level = await db.check_user_verification_needed(user_id)
+                achieved_level = req_level if needs_verify else 1
 
-                await db.update_verify_status(user_id, target_level)
-                await message.reply_text(f"✅ **Level {target_level} Verification Successful!**")
+                await db.update_verify_status(user_id, achieved_level)
+                await message.reply_text(f"✅ **Level {achieved_level} Verification Successful!**")
 
                 # Fetch and Send File After Verification
                 file_data = await db.get_file(file_db_id)
@@ -173,7 +173,7 @@ async def start_command(client, message):
                 except Exception as e:
                     print(f"Error In Verification: {e}")
 
-            # Send file directly if already verified
+            # Send file directly if already verified or gap time is active
             file_data = await db.get_file(file_db_id)
             if file_data:
                 success = await send_file_with_fallback(client, message.chat.id, file_data, message.id)
