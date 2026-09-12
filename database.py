@@ -110,7 +110,7 @@ class Database:
 
     async def check_user_verification_needed(self, user_id: int):
         """
-        Determines verification status and required level accurately.
+        Calculates exact gap transitions and locks verification till Midnight 12 AM IST upon Level 3 completion.
         Returns: (needs_verification: bool, required_level: int)
         """
         user = await self.get_notcopy_user(user_id)
@@ -119,6 +119,7 @@ class Database:
 
         ist_tz = pytz.timezone('Asia/Kolkata')
         now_time = datetime.datetime.now(tz=ist_tz)
+        today_midnight = now_time.replace(hour=0, minute=0, second=0, microsecond=0)
 
         v_level = user.get("verify_level", 0)
 
@@ -126,30 +127,30 @@ class Database:
         second_v = self._parse_ist_datetime(user.get("second_time_verified"))
         third_v = self._parse_ist_datetime(user.get("third_time_verified"))
 
-        # 1st Level: New user or never verified
-        if v_level == 0 or (now_time - last_v).total_seconds() > (86400 * 365):
+        # 1. Level 0 ya naya din (1st verification aaj ki midnight se pehle ki hai)
+        if v_level == 0 or last_v < today_midnight:
             return True, 1
 
-        # 2nd Level: Level 1 clear ho chuka hai, check TWO_VERIFY_GAP
+        # 2. Level 1 Completed: TWO_VERIFY_GAP ke baad Level 2 maango
         if v_level == 1:
-            time_diff = (now_time - last_v).total_seconds()
-            if time_diff >= config.TWO_VERIFY_GAP:
+            time_since_last_v = (now_time - last_v).total_seconds()
+            if time_since_last_v >= config.TWO_VERIFY_GAP:
                 return True, 2
-            return False, 0
+            return False, 0  # Gap chal raha hai -> Direct File
 
-        # 3rd Level: Level 2 clear ho chuka hai, check THREE_VERIFY_GAP
+        # 3. Level 2 Completed: THREE_VERIFY_GAP ke baad Level 3 maango
         if v_level == 2:
-            time_diff = (now_time - second_v).total_seconds()
-            if time_diff >= config.THREE_VERIFY_GAP:
+            time_since_second_v = (now_time - second_v).total_seconds()
+            if time_since_second_v >= config.THREE_VERIFY_GAP:
                 return True, 3
-            return False, 0
+            return False, 0  # Gap chal raha hai -> Direct File
 
-        # Level 3 Complete: THREE_VERIFY_GAP ke baad restart from Level 2
+        # 4. Level 3 Completed: Aaj Raat 12:00 AM Midnight IST tak full direct access
         if v_level == 3:
-            time_diff = (now_time - third_v).total_seconds()
-            if time_diff >= config.THREE_VERIFY_GAP:
-                return True, 2
-            return False, 0
+            if third_v >= today_midnight:
+                return False, 0  # Aaj hi 3rd verify kiya hai -> Night 12 AM tak koi verification nahi
+            else:
+                return True, 1   # Agle din cycle Level 1 se restart
 
         return False, 0
 
