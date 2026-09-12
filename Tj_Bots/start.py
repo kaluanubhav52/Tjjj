@@ -78,7 +78,6 @@ async def start_command(client, message):
                     return await message.reply_text("❌ **Invalid or Expired Link!** Please try again.")
 
                 if verify_info.get("verified"):
-                    # Agar link already use ho chuki hai fir bhi direct file check karenge
                     file_data = await db.get_file(file_db_id)
                     if file_data:
                         return await send_file_with_fallback(client, message.chat.id, file_data, message.id)
@@ -87,24 +86,12 @@ async def start_command(client, message):
                 # Mark Token as Verified in DB
                 await db.update_verify_id_info(user_id, verify_id, {"verified": True})
 
-                # Update verification level based on current status
-                is_v1 = await db.is_user_verified(user_id)
-                is_v2 = await db.user_verified(user_id)
-                is_second_shortener = await db.use_second_shortener(user_id, config.TWO_VERIFY_GAP)
-                is_third_shortener = await db.use_third_shortener(user_id, config.THREE_VERIFY_GAP)
+                # Check dynamic level required and update verified level
+                _, required_level = await db.check_user_verification_needed(user_id)
+                target_level = required_level if required_level > 0 else 1
 
-                if not is_v1:
-                    await db.update_verify_status(user_id, 1)
-                    await message.reply_text("✅ **1st Verification Successful!**")
-                elif is_second_shortener or not is_v2:
-                    await db.update_verify_status(user_id, 2)
-                    await message.reply_text("✅ **2nd Verification Successful!**")
-                elif is_third_shortener:
-                    await db.update_verify_status(user_id, 3)
-                    await message.reply_text("✅ **3rd Verification Successful!**")
-                else:
-                    await db.update_verify_status(user_id, 1)
-                    await message.reply_text("✅ **Verification Successful!**")
+                await db.update_verify_status(user_id, target_level)
+                await message.reply_text(f"✅ **Level {target_level} Verification Successful!**")
 
                 # Fetch and Send File After Verification
                 file_data = await db.get_file(file_db_id)
@@ -144,32 +131,30 @@ async def start_command(client, message):
             # Verification Gateway Check
             if config.IS_VERIFY and not await db.has_premium_access(user_id):
                 try:
-                    user_verified = await db.is_user_verified(user_id)
-                    is_second_shortener = await db.use_second_shortener(user_id, config.TWO_VERIFY_GAP)
-                    is_third_shortener = await db.use_third_shortener(user_id, config.THREE_VERIFY_GAP)
+                    needs_verify, req_level = await db.check_user_verification_needed(user_id)
 
-                    if not user_verified or is_second_shortener or is_third_shortener:
+                    if needs_verify:
                         verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
                         await db.create_verify_id(user_id, verify_id)
 
                         deep_link = f"https://telegram.me/{client.me.username}?start=notcopy_{user_id}_{verify_id}_{file_db_id}"
-                        verify_url = await get_shortlink(deep_link, grp_id=None, is_second_shortener=is_second_shortener, is_third_shortener=is_third_shortener)
+                        verify_url = await get_shortlink(deep_link, level=req_level)
 
-                        if is_third_shortener:
+                        if req_level == 3:
                             howtodownload = config.TUTORIAL_3
+                            msg_text = getattr(config, 'THIRDT_VERIFICATION_TEXT', getattr(config, 'VERIFICATION_TEXT', 'Please verify.'))
+                        elif req_level == 2:
+                            howtodownload = config.TUTORIAL_2
+                            msg_text = getattr(config, 'SECOND_VERIFICATION_TEXT', getattr(config, 'VERIFICATION_TEXT', 'Please verify.'))
                         else:
-                            howtodownload = config.TUTORIAL_2 if is_second_shortener else config.TUTORIAL
+                            howtodownload = config.TUTORIAL
+                            msg_text = getattr(config, 'VERIFICATION_TEXT', 'Please verify.')
 
                         buttons = [
                             [InlineKeyboardButton(text="♻️ ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ᴠᴇʀɪꜰʏ ♻️", url=verify_url)],
                             [InlineKeyboardButton(text="⁉️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ ⁉️", url=howtodownload)]
                         ]
                         reply_markup = InlineKeyboardMarkup(buttons)
-
-                        if await db.user_verified(user_id):
-                            msg_text = config.THIRDT_VERIFICATION_TEXT
-                        else:
-                            msg_text = config.SECOND_VERIFICATION_TEXT if is_second_shortener else config.VERIFICATION_TEXT
 
                         n = await message.reply_text(
                             text=msg_text.format(message.from_user.mention),
